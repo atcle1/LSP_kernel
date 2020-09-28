@@ -1,0 +1,3674 @@
+From 03296ff2ff8f4c218da0fcbe8a1ad7c75c367eaf Mon Sep 17 00:00:00 2001
+From: summer <summer@davinci.snu.ac.kr>
+Date: Mon, 15 Jun 2015 20:58:46 +0900
+Subject: [PATCH] final
+
+---
+ arch/arm/Kconfig                        |   6 +
+ drivers/base/power/wakeup.c             |  59 +++-
+ drivers/gpio/gpio-msm-common.c          |   5 +-
+ drivers/irqchip/irq-gic.c               |  13 +-
+ drivers/video/msm/mdss/mdss_dsi_panel.c |  14 +-
+ drivers/video/msm/mdss/mdss_fb.c        |  10 +
+ include/linux/input.h                   |  14 +
+ include/linux/sched.h                   |   7 +
+ include/linux/spr_logger.h              |  41 +++
+ include/linux/sprofiler.h               | 158 +++++++++
+ kernel/Makefile                         |   3 +
+ kernel/power/suspend.c                  |  29 +-
+ kernel/power/wakelock.c                 |  19 ++
+ kernel/power/wakeup_reason.c            |  19 ++
+ kernel/sched/core.c                     |   7 +
+ kernel/sprofiler/Makefile               |  12 +
+ kernel/sprofiler/spr_common.h           |  24 ++
+ kernel/sprofiler/spr_core.c             | 403 +++++++++++++++++++++++
+ kernel/sprofiler/spr_cpustat.c          | 561 ++++++++++++++++++++++++++++++++
+ kernel/sprofiler/spr_cpustat.h          |  13 +
+ kernel/sprofiler/spr_debugfs.c          | 272 ++++++++++++++++
+ kernel/sprofiler/spr_init.c             |  49 +++
+ kernel/sprofiler/spr_input.c            | 224 +++++++++++++
+ kernel/sprofiler/spr_input.h            |  16 +
+ kernel/sprofiler/spr_logger.c           | 291 +++++++++++++++++
+ kernel/sprofiler/spr_net.c              | 194 +++++++++++
+ kernel/sprofiler/spr_net.h              |  13 +
+ kernel/sprofiler/spr_panel.c            | 136 ++++++++
+ kernel/sprofiler/spr_panel.h            |   7 +
+ kernel/sprofiler/spr_sched.c            | 282 ++++++++++++++++
+ kernel/sprofiler/spr_sched.h            |  16 +
+ kernel/sprofiler/spr_udp.c              | 130 ++++++++
+ kernel/sprofiler/spr_udp.h              |   6 +
+ kernel/sprofiler/spr_userio.c           |  54 +++
+ kernel/sprofiler/sprofiler_common.h     |  13 +
+ 35 files changed, 3109 insertions(+), 11 deletions(-)
+ create mode 100644 include/linux/spr_logger.h
+ create mode 100644 include/linux/sprofiler.h
+ create mode 100644 kernel/sprofiler/Makefile
+ create mode 100644 kernel/sprofiler/spr_common.h
+ create mode 100644 kernel/sprofiler/spr_core.c
+ create mode 100644 kernel/sprofiler/spr_cpustat.c
+ create mode 100644 kernel/sprofiler/spr_cpustat.h
+ create mode 100644 kernel/sprofiler/spr_debugfs.c
+ create mode 100644 kernel/sprofiler/spr_init.c
+ create mode 100644 kernel/sprofiler/spr_input.c
+ create mode 100644 kernel/sprofiler/spr_input.h
+ create mode 100644 kernel/sprofiler/spr_logger.c
+ create mode 100644 kernel/sprofiler/spr_net.c
+ create mode 100644 kernel/sprofiler/spr_net.h
+ create mode 100644 kernel/sprofiler/spr_panel.c
+ create mode 100644 kernel/sprofiler/spr_panel.h
+ create mode 100644 kernel/sprofiler/spr_sched.c
+ create mode 100644 kernel/sprofiler/spr_sched.h
+ create mode 100644 kernel/sprofiler/spr_udp.c
+ create mode 100644 kernel/sprofiler/spr_udp.h
+ create mode 100644 kernel/sprofiler/spr_userio.c
+ create mode 100644 kernel/sprofiler/sprofiler_common.h
+
+diff --git a/arch/arm/Kconfig b/arch/arm/Kconfig
+index d18d3c9..b0ede05 100644
+--- a/arch/arm/Kconfig
++++ b/arch/arm/Kconfig
+@@ -1463,6 +1463,12 @@ endmenu
+ 
+ menu "Kernel Features"
+ 
++config SPROFILER
++	bool "Sprofiler enable"
++	default y
++	help
++	   sprofiler
++
+ config HAVE_SMP
+ 	bool
+ 	help
+diff --git a/drivers/base/power/wakeup.c b/drivers/base/power/wakeup.c
+index 79715e7..c171eeb 100644
+--- a/drivers/base/power/wakeup.c
++++ b/drivers/base/power/wakeup.c
+@@ -17,6 +17,10 @@
+ #include <trace/events/power.h>
+ 
+ #include "power.h"
++#ifdef CONFIG_SPROFILER
++#include <linux/sprofiler.h>
++#include <linux/spr_logger.h>
++#endif
+ 
+ /*
+  * If set, the suspend/hibernate code will abort transitions to a sleep state
+@@ -131,7 +135,13 @@ void wakeup_source_add(struct wakeup_source *ws)
+ 
+ 	if (WARN_ON(!ws))
+ 		return;
+-
++#ifdef CONFIG_SPROFILER
++	
++	IF_RESUMMED {
++		//spr_log("wakeup_source_add %s", ws->name);
++	}
++	
++#endif
+ 	spin_lock_init(&ws->lock);
+ 	setup_timer(&ws->timer, pm_wakeup_timer_fn, (unsigned long)ws);
+ 	ws->active = false;
+@@ -153,7 +163,13 @@ void wakeup_source_remove(struct wakeup_source *ws)
+ 
+ 	if (WARN_ON(!ws))
+ 		return;
+-
++#ifdef CONFIG_SPROFILER
++	
++	IF_RESUMMED {
++		//spr_log("wakeup_source_remove %s", ws->name);
++	}
++	
++#endif
+ 	spin_lock_irqsave(&events_lock, flags);
+ 	list_del_rcu(&ws->entry);
+ 	spin_unlock_irqrestore(&events_lock, flags);
+@@ -387,7 +403,13 @@ static void wakeup_source_activate(struct wakeup_source *ws)
+ 	 * out of PM_SUSPEND_FREEZE state
+ 	 */
+ 	freeze_wake();
+-
++#ifdef CONFIG_SPROFILER
++	
++	IF_RESUMMED {
++		//spr_log("wakeup_source_activate %s", ws->name);
++	}
++	
++#endif
+ 	ws->active = true;
+ 	ws->active_count++;
+ 	ws->last_time = ktime_get();
+@@ -427,7 +449,13 @@ void __pm_stay_awake(struct wakeup_source *ws)
+ 
+ 	if (!ws)
+ 		return;
+-
++#ifdef CONFIG_SPROFILER
++	
++	IF_RESUMMED {
++		//spr_log("__pm_stay_awake %s", ws->name);
++	}
++	
++#endif
+ 	spin_lock_irqsave(&ws->lock, flags);
+ 
+ 	wakeup_source_report_event(ws);
+@@ -467,6 +495,13 @@ static void update_prevent_sleep_time(struct wakeup_source *ws, ktime_t now)
+ {
+ 	ktime_t delta = ktime_sub(now, ws->start_prevent_time);
+ 	ws->prevent_sleep_time = ktime_add(ws->prevent_sleep_time, delta);
++#ifdef CONFIG_SPROFILER
++	
++	IF_RESUMMED {
++		//spr_log("update_prevent_sleep_time %s %ld", ws->name, delta);
++	}
++	
++#endif
+ }
+ #else
+ static inline void update_prevent_sleep_time(struct wakeup_source *ws,
+@@ -503,7 +538,13 @@ static void wakeup_source_deactivate(struct wakeup_source *ws)
+ 	}
+ 
+ 	ws->active = false;
+-
++#ifdef CONFIG_SPROFILER
++	
++	IF_RESUMMED {
++		//spr_log("wakeup_source_deactivate %s", ws->name);
++	}
++	
++#endif
+ 	now = ktime_get();
+ 	duration = ktime_sub(now, ws->last_time);
+ 	ws->total_time = ktime_add(ws->total_time, duration);
+@@ -544,7 +585,13 @@ void __pm_relax(struct wakeup_source *ws)
+ 
+ 	if (!ws)
+ 		return;
+-
++#ifdef CONFIG_SPROFILER
++	
++	IF_RESUMMED {
++		//spr_log("__pm_relax %s", ws->name);
++	}
++	
++#endif
+ 	spin_lock_irqsave(&ws->lock, flags);
+ 	if (ws->active)
+ 		wakeup_source_deactivate(ws);
+diff --git a/drivers/gpio/gpio-msm-common.c b/drivers/gpio/gpio-msm-common.c
+index 3a20533..93a2e9b 100644
+--- a/drivers/gpio/gpio-msm-common.c
++++ b/drivers/gpio/gpio-msm-common.c
+@@ -27,6 +27,7 @@
+ #include <linux/err.h>
+ #include <linux/platform_device.h>
+ #include <linux/slab.h>
++ #include <linux/wakeup_reason.h>	//SPROFILER
+ 
+ #include <mach/msm_iomap.h>
+ #include <mach/gpiomux.h>
+@@ -390,7 +391,9 @@ void msm_gpio_show_resume_irq(void)
+ 				name = "stray irq";
+ 			else if (desc->action && desc->action->name)
+ 				name = desc->action->name;
+-
++#ifdef CONFIG_SPROFILER
++				log_wakeup_reason(irq);
++#endif
+ 			pr_warning("%s: %d triggered %s\n",
+ 					__func__, irq, name);
+ 		}
+diff --git a/drivers/irqchip/irq-gic.c b/drivers/irqchip/irq-gic.c
+index 8df8b34..4df4b83 100644
+--- a/drivers/irqchip/irq-gic.c
++++ b/drivers/irqchip/irq-gic.c
+@@ -45,6 +45,10 @@
+ #include <linux/syscore_ops.h>
+ #include <linux/msm_rtb.h>
+ 
++#ifdef CONFIG_SPROFILER
++#include <linux/wakeup_reason.h>
++#endif
++
+ #include <asm/irq.h>
+ #include <asm/exception.h>
+ #include <asm/smp_plat.h>
+@@ -273,6 +277,8 @@ static void gic_show_resume_irq(struct gic_chip_data *gic)
+ 	u32 enabled;
+ 	unsigned long pending[32];
+ 	void __iomem *base = gic_data_dist_base(gic);
++	struct irq_desc *desc;
++	const char *name;
+ 
+ 	if (!msm_show_resume_irq_mask)
+ 		return;
+@@ -288,8 +294,11 @@ static void gic_show_resume_irq(struct gic_chip_data *gic)
+ 	for (i = find_first_bit(pending, gic->gic_irqs);
+ 	     i < gic->gic_irqs;
+ 	     i = find_next_bit(pending, gic->gic_irqs, i+1)) {
+-		struct irq_desc *desc = irq_to_desc(i + gic->irq_offset);
+-		const char *name = "null";
++#ifdef CONFIG_SPROFILER
++		log_wakeup_reason(i + gic->irq_offset);
++#endif
++		desc = irq_to_desc(i + gic->irq_offset);
++		name = "null";
+ 
+ 		if (desc == NULL)
+ 			name = "stray irq";
+diff --git a/drivers/video/msm/mdss/mdss_dsi_panel.c b/drivers/video/msm/mdss/mdss_dsi_panel.c
+index 94137ab..bd55439 100644
+--- a/drivers/video/msm/mdss/mdss_dsi_panel.c
++++ b/drivers/video/msm/mdss/mdss_dsi_panel.c
+@@ -24,6 +24,10 @@
+ 
+ #include "mdss_dsi.h"
+ 
++#ifdef CONFIG_SPROFILER
++#include <linux/sprofiler.h>
++#endif
++
+ #define DT_CMD_HDR 6
+ 
+ static int mdss_panel_height = 480;
+@@ -325,6 +329,9 @@ static void mdss_dsi_panel_set_idle_mode(struct mdss_panel_data *pdata,
+ 			pr_debug("idle off --\n");
+ 		}
+ 	}
++	#ifdef CONFIG_SPROFILER
++		spr_screen_panel_idle_mode_change(enable);
++	#endif
+ }
+ 
+ static int mdss_dsi_panel_get_idle_mode(struct mdss_panel_data *pdata)
+@@ -772,6 +779,9 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
+ end:
+ 	pinfo->blank_state = MDSS_PANEL_BLANK_UNBLANK;
+ 	pr_debug("%s:-\n", __func__);
++#ifdef CONFIG_SPROFILER
++	spr_screen_panel_on_off(1);
++#endif
+ 	return 0;
+ }
+ 
+@@ -798,7 +808,9 @@ static int mdss_dsi_panel_off(struct mdss_panel_data *pdata)
+ 
+ 	if (ctrl->off_cmds.cmd_cnt)
+ 		mdss_dsi_panel_cmds_send(ctrl, &ctrl->off_cmds);
+-
++#ifdef CONFIG_SPROFILER
++	spr_screen_panel_on_off(0);
++#endif
+ end:
+ 	pinfo->blank_state = MDSS_PANEL_BLANK_BLANK;
+ 	/* clear idle state */
+diff --git a/drivers/video/msm/mdss/mdss_fb.c b/drivers/video/msm/mdss/mdss_fb.c
+index 50d033f..30d4ed9 100644
+--- a/drivers/video/msm/mdss/mdss_fb.c
++++ b/drivers/video/msm/mdss/mdss_fb.c
+@@ -59,6 +59,10 @@
+ #include <mach/lge_handle_panic.h>
+ #endif
+ 
++#ifdef CONFIG_SPROFILER
++#include <linux/sprofiler.h>
++#endif
++
+ #ifdef CONFIG_FB_MSM_TRIPLE_BUFFER
+ #define MDSS_FB_NUM 3
+ #else
+@@ -1120,6 +1124,9 @@ void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
+ 			mutex_lock(&mfd->bl_lock);
+ 		}
+ 		mdss_fb_bl_update_notify(mfd);
++#ifdef CONFIG_SPROFILER
++		spr_screen_brightness_change(bkl_lvl);
++#endif
+ 	}
+ }
+ 
+@@ -1147,6 +1154,9 @@ void mdss_fb_update_backlight(struct msm_fb_data_type *mfd)
+ 			pdata->set_backlight(pdata, temp);
+ 			mfd->bl_level_scaled = mfd->unset_bl_level;
+ 			mfd->bl_updated = 1;
++#ifdef CONFIG_SPROFILER
++			spr_screen_brightness_change(mfd->bl_level);
++#endif
+ 		}
+ 	}
+ 	mutex_unlock(&mfd->bl_lock);
+diff --git a/include/linux/input.h b/include/linux/input.h
+index 82ce323..305b79a 100644
+--- a/include/linux/input.h
++++ b/include/linux/input.h
+@@ -24,6 +24,10 @@
+ #include <linux/timer.h>
+ #include <linux/mod_devicetable.h>
+ 
++#ifdef CONFIG_SPROFILER
++#include <linux/sprofiler.h>
++#endif
++
+ /**
+  * struct input_value - input value representation
+  * @type: type of value (EV_KEY, EV_ABS, etc)
+@@ -386,6 +390,10 @@ void input_inject_event(struct input_handle *handle, unsigned int type, unsigned
+ 
+ static inline void input_report_key(struct input_dev *dev, unsigned int code, int value)
+ {
++#ifdef CONFIG_SPROFILER
++	if (code == ABS_MT_POSITION_X || code == ABS_MT_POSITION_Y)
++		spr_input_report_key(code, value);
++#endif
+ 	input_event(dev, EV_KEY, code, !!value);
+ }
+ 
+@@ -396,6 +404,9 @@ static inline void input_report_rel(struct input_dev *dev, unsigned int code, in
+ 
+ static inline void input_report_abs(struct input_dev *dev, unsigned int code, int value)
+ {
++#ifdef CONFIG_SPROFILER
++	spr_input_report_abs(code, value);
++#endif
+ 	input_event(dev, EV_ABS, code, value);
+ }
+ 
+@@ -411,6 +422,9 @@ static inline void input_report_switch(struct input_dev *dev, unsigned int code,
+ 
+ static inline void input_sync(struct input_dev *dev)
+ {
++#ifdef CONFIG_SPROFILER
++	spr_input_sync();
++#endif
+ 	input_event(dev, EV_SYN, SYN_REPORT, 0);
+ }
+ 
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 5762eb7..dc11a26 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -55,6 +55,10 @@ struct sched_param {
+ 
+ #include <asm/processor.h>
+ 
++#ifdef CONFIG_SPROFILER
++#include <linux/sprofiler.h>
++#endif
++
+ #define SCHED_ATTR_SIZE_VER0	48	/* sizeof first published struct */
+ 
+ /*
+@@ -1523,6 +1527,9 @@ struct task_struct {
+ 	unsigned int	sequential_io;
+ 	unsigned int	sequential_io_avg;
+ #endif
++#ifdef CONFIG_SPROFILER
++	struct spr_task_struct spr_data;
++#endif
+ };
+ 
+ /* Future-safe accessor for struct task_struct's cpus_allowed. */
+diff --git a/include/linux/spr_logger.h b/include/linux/spr_logger.h
+new file mode 100644
+index 0000000..5a72108
+--- /dev/null
++++ b/include/linux/spr_logger.h
+@@ -0,0 +1,41 @@
++#ifndef __SPR_LOGGER
++#define __SPR_LOGGER
++
++#include <linux/kernel.h>
++
++// [4byte:index][1byte:type] {packet}
++
++#define PACKET_TEXT_WT			0
++/* [timespec(8)][messge][\0] */
++#define PACKET_TEXT				1
++/* [messge][\0] */
++#define PACKET_BINARY_WT		2
++/* [timespec(8)][subtype(1)][size(1)][binary(max:256)] */
++#define PACKET_BINARY			3
++/* [subtype(1)][size(1)][binary(max:256)] */
++#define PACKET_BIG_BINARY_WT	4
++/* [timespec(8)][size(2)][binary(max:64KB)] */
++#define PACKET_BIG_BINARY		5
++/* [size(2)][binary(max:64KB)] */
++
++#define MAX_TEXT_LOG_SIZE		512
++
++/* logger control */
++int spr_init_log(char *buf, const int bufsize);
++int spr_init_log_self(const int bufsize);
++void spr_buf_clear(void);
++
++/* logger */
++int spr_getlogs_to_user(char *ubuf, int maxsize, int *ulog_size);
++void spr_get_buf_status(int *cursize, int *left, int *total);
++int spr_get_log_size(void);
++
++/* logging */
++int spr_log_(char *log, bool btime);
++int spr_log(const char *fmt, ...);
++int spr_log_nt(const char *fmt, ...);
++int spr_log_binary(char *log, int subtype, int size, bool btime);
++int spr_log_big_binary(char *log, int subtype, int size, bool btime);
++
++
++#endif
+diff --git a/include/linux/sprofiler.h b/include/linux/sprofiler.h
+new file mode 100644
+index 0000000..8047a52
+--- /dev/null
++++ b/include/linux/sprofiler.h
+@@ -0,0 +1,158 @@
++#ifndef __LINUX_SPROFILE_H
++#define __LINUX_SPROFILE_H
++
++#include <asm/cputime.h>
++
++#define SPR_STATUS_UNKNOWN	0
++#define SPR_STATUS_INITED	1	// initialized in booting
++#define SPR_STATUS_STARTED	2	// when ready to logging, automatically go to next state...
++#define SPR_STATUS_RESUMMED	3	// now logging
++#define SPR_STATUS_PAUSED	4	// now paused, could go to resummed state anytime.
++#define SPR_STATUS_REBOOT	5	// spr is paused for shutdown, (but automatically resumed when next booting end.)
++#define SPR_STATUS_STOPED	6	// stop logging, do not restore the state next booting time.
++
++#define IF_RESUMMED if (spr_ginfo.state == 3)
++#define IF_NOT_RESUMMED if (spr_ginfo.state != 3)
++#define RETURN_IF_NOT_RESUMMED if(spr_ginfo.state != 3) return;
++#define RETURN_ZERO_IF_NOT_RESUMMED if(spr_ginfo.state != 3) return 0;
++
++#define VALID_TIMESPEC( _a )                                  \
++  ( ( ( _a )->tv_sec > 0 || ( _a )->tv_nsec > 0 ) ? 1 : 0 )
++
++#define ADD_TIMESPEC( _a, _b, _return )                       \
++  do {                                                        \
++    ( _return )->tv_sec = ( _a )->tv_sec + ( _b )->tv_sec;    \
++    ( _return )->tv_nsec = ( _a )->tv_nsec + ( _b )->tv_nsec; \
++    if ( ( _return )->tv_nsec >= 1000000000 ) {               \
++      ( _return )->tv_sec++;                                  \
++      ( _return )->tv_nsec -= 1000000000;                     \
++    }                                                         \
++  }                                                           \
++  while ( 0 )
++
++#define SUB_TIMESPEC( _a, _b, _return )                       \
++  do {                                                        \
++    ( _return )->tv_sec = ( _a )->tv_sec - ( _b )->tv_sec;    \
++    ( _return )->tv_nsec = ( _a )->tv_nsec - ( _b )->tv_nsec; \
++    if ( ( _return )->tv_nsec < 0 ) {                         \
++      ( _return )->tv_sec--;                                  \
++      ( _return )->tv_nsec += 1000000000;                     \
++    }                                                         \
++  }                                                           \
++  while ( 0 )
++
++#define TIMESPEC_LESS_THEN( _a, _b )                          \
++  ( ( ( _a )->tv_sec == ( _b )->tv_sec ) ?                    \
++    ( ( _a )->tv_nsec < ( _b )->tv_nsec ) :                   \
++    ( ( _a )->tv_sec < ( _b )->tv_sec ) )
++
++#define TIMESPEC_TO_MICROSECONDS( _a, _b )                    \
++  do {                                                        \
++    struct timespec round = { 0, 999 };                       \
++    ADD_TIMESPEC( _a, &round, &round );                       \
++    ( *( _b ) = ( int ) ( round.tv_sec * 1000000 + round.tv_nsec / 1000 ) ); \
++  }                                                           \
++  while ( 0 )
++
++struct irq_desc;
++
++struct spr_task_struct {
++	int known_task;
++};
++
++struct spr_session_log {
++	int goto_suspend_state;
++	int wakeup_error;
++	struct timespec s_ts, e_ts;
++};
++
++struct spr_pstate_log {
++	struct timespec s_ts;
++	int core;
++	int freq;
++};
++
++struct spr_info {
++	int state;
++	int cur_session;
++	int cpu_freq;
++	int cpu_core;
++};
++extern struct spr_info spr_ginfo;
++
++struct spr_log_time {
++	struct timespec s_ts;
++	int buf_pos;
++};
++
++// sprofiler control
++int sprofiler_init_debugfs(char *aspr_buf, int size);
++
++void init_sprofiler(void);
++
++void start_sprofiler(void);
++void resume_sprofiler(void);
++void pause_sprofiler(void);
++
++void stop_sprofiler(void);
++
++/* task scheduler */
++//void pt_sched_process_fork(struct task_struct *task);	/* init thread */
++//void pt_task_sched_out(struct task_struct *task);	/* suspend thread */
++//void pt_task_sched_in(struct task_struct *task);	/* resume thread */
++//void pt_exit_task(struct task_struct *next);		/* exit thread */
++//void pt_sched_switch(struct task_struct *prev, struct task_struct *next); /* sched switch */
++
++
++
++// kernel/fork.c
++void spr_fork_copy_process(struct task_struct *p);
++
++// arch/arm/kernel.smp.c
++void spr_smp_cpu_disable(int cpu);			/* cpu off */
++void spr_smp_cpu_up(int cpu);			/* cpu up */
++
++// driver/cpufreq.c
++void spr_cpufreq_driver_target(unsigned int freq, int rval);	/* freq change */
++
++// kernel/power/suspend.c
++void pm_enter_state_before(int state);    // deprecated, not using
++void pm_enter_state_after(int error);     // deprecated, not using
++
++// usb detect.c
++void spr_otg_charge_change(int mode);
++
++// screen brightness
++void spr_screen_brightness_change(int brightness);
++void spr_screen_panel_idle_mode_change(int enable);
++void spr_screen_panel_on_off(int mode);
++
++// wakup reason
++void spr_pm_wakeup_reason(int irq, struct irq_desc *desc);
++// kernel/power/wakeup_reason.c
++int spr_get_wakeup_reason(int *arr);
++
++// tick
++void spr_tick_periodic(int cpu);
++void spr_tick_suspend(void);
++void spr_tick_resume(void);
++
++//test
++void spr_test_log(const char *msg, int n);
++
++// include/linux/input.h
++extern struct timeval last_pressed_time;
++void spr_input_report_key(unsigned int code, int value);
++void spr_input_sync(void);
++void spr_input_report_abs(unsigned int code, int value);
++
++// kernel/sched/core.c
++void spr_sched_context_switch(int cpu, struct task_struct *prev, struct task_struct *next);
++// spr_cpustat.c
++void spr_core_online(int cpu);
++
++// sprofiler/spr_core.c
++int spr_suspend_ops(void);
++void spr_resume_ops(void);
++
++#endif
+diff --git a/kernel/Makefile b/kernel/Makefile
+index 22f0c9c..7e369cf 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -22,6 +22,9 @@ CFLAGS_REMOVE_cgroup-debug.o = -pg
+ CFLAGS_REMOVE_irq_work.o = -pg
+ endif
+ 
++# SPROFILER
++obj-$(CONFIG_SPROFILER) += sprofiler/
++
+ obj-y += sched/
+ obj-y += power/
+ obj-y += cpu/
+diff --git a/kernel/power/suspend.c b/kernel/power/suspend.c
+index 454568e..25a950a 100644
+--- a/kernel/power/suspend.c
++++ b/kernel/power/suspend.c
+@@ -28,6 +28,10 @@
+ #include <linux/rtc.h>
+ #include <trace/events/power.h>
+ 
++#ifdef CONFIG_SPROFILER
++#include <linux/sprofiler.h>
++#endif
++
+ #include "power.h"
+ 
+ const char *const pm_states[PM_SUSPEND_MAX] = {
+@@ -255,7 +259,11 @@ int suspend_devices_and_enter(suspend_state_t state)
+ {
+ 	int error;
+ 	bool wakeup = false;
+-
++/*
++#ifdef CONFIG_SPROFILER
++	bool suspended = false;
++#endif
++*/
+ 	if (need_suspend_ops(state) && !suspend_ops)
+ 		return -ENOSYS;
+ 
+@@ -276,6 +284,12 @@ int suspend_devices_and_enter(suspend_state_t state)
+ 	suspend_test_finish("suspend devices");
+ 	if (suspend_test(TEST_DEVICES))
+ 		goto Recover_platform;
++/*
++#ifdef CONFIG_SPROFILER
++	pm_enter_state_before(state);
++	suspended = true;
++#endif
++*/
+ 
+ 	do {
+ 		error = suspend_enter(state, &wakeup);
+@@ -288,6 +302,15 @@ int suspend_devices_and_enter(suspend_state_t state)
+ 	suspend_test_finish("resume devices");
+ 	ftrace_start();
+ 	resume_console();
++/*
++#ifdef CONFIG_SPROFILER
++	if (suspended)
++		pm_enter_state_after(error);
++#endif
++*/
++#ifdef CONFIG_SPROFILER
++	spr_resume_ops();
++#endif
+  Close:
+ 	if (need_suspend_ops(state) && suspend_ops->end)
+ 		suspend_ops->end();
+@@ -385,6 +408,10 @@ int pm_suspend(suspend_state_t state)
+ 	if (state <= PM_SUSPEND_ON || state >= PM_SUSPEND_MAX)
+ 		return -EINVAL;
+ 
++#ifdef CONFIG_SPROFILER
++	//pm_enter_state_before(state);
++	spr_suspend_ops();
++#endif
+ 	pm_suspend_marker("entry");
+ 	error = enter_state(state);
+ 	if (error) {
+diff --git a/kernel/power/wakelock.c b/kernel/power/wakelock.c
+index 8f50de3..5c65381 100644
+--- a/kernel/power/wakelock.c
++++ b/kernel/power/wakelock.c
+@@ -18,6 +18,11 @@
+ #include <linux/rbtree.h>
+ #include <linux/slab.h>
+ 
++#ifdef CONFIG_SPROFILER
++#include <linux/sprofiler.h>
++#include <linux/spr_logger.h>
++#endif
++
+ static DEFINE_MUTEX(wakelocks_lock);
+ 
+ struct wakelock {
+@@ -213,6 +218,13 @@ int pm_wake_lock(const char *buf)
+ 		ret = PTR_ERR(wl);
+ 		goto out;
+ 	}
++#ifdef CONFIG_SPROFILER
++	
++	IF_RESUMMED {
++		//spr_log("LOK %s", buf);
++	}
++	
++#endif
+ 	if (timeout_ns) {
+ 		u64 timeout_ms = timeout_ns + NSEC_PER_MSEC - 1;
+ 
+@@ -255,6 +267,13 @@ int pm_wake_unlock(const char *buf)
+ 		ret = PTR_ERR(wl);
+ 		goto out;
+ 	}
++#ifdef CONFIG_SPROFILER
++	
++	IF_RESUMMED {
++		//spr_log("ULK %s", buf);
++	}
++	
++#endif
+ 	__pm_relax(&wl->ws);
+ 
+ 	wakelocks_lru_most_recent(wl);
+diff --git a/kernel/power/wakeup_reason.c b/kernel/power/wakeup_reason.c
+index 187e4e9..d9e21a6 100644
+--- a/kernel/power/wakeup_reason.c
++++ b/kernel/power/wakeup_reason.c
+@@ -27,6 +27,9 @@
+ #include <linux/notifier.h>
+ #include <linux/suspend.h>
+ 
++#ifdef CONFIG_SPROFILER
++#include <linux/sprofiler.h>
++#endif
+ 
+ #define MAX_WAKEUP_REASON_IRQS 32
+ static int irq_list[MAX_WAKEUP_REASON_IRQS];
+@@ -71,6 +74,9 @@ void log_wakeup_reason(int irq)
+ {
+ 	struct irq_desc *desc;
+ 	desc = irq_to_desc(irq);
++#ifdef CONFIG_SPROFILER
++	spr_pm_wakeup_reason(irq, desc);
++#endif
+ 	if (desc && desc->action && desc->action->name)
+ 		printk(KERN_INFO "Resume caused by IRQ %d, %s\n", irq,
+ 				desc->action->name);
+@@ -89,6 +95,19 @@ void log_wakeup_reason(int irq)
+ 	spin_unlock(&resume_reason_lock);
+ }
+ 
++#ifdef CONFIG_SPROFILER
++int spr_get_wakeup_reason(int *arr)
++{
++	int irq_no;
++	spin_lock(&resume_reason_lock);
++	for (irq_no = 0; irq_no < irqcount; irq_no++) {
++		arr[irq_no] = irq_list[irq_no];
++	}
++	spin_unlock(&resume_reason_lock);
++	return irqcount;
++}
++#endif
++
+ /* Detects a suspend and clears all the previous wake up reasons*/
+ static int wakeup_reason_pm_event(struct notifier_block *notifier,
+ 		unsigned long pm_event, void *unused)
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index c081954..8b5c97d 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -90,6 +90,10 @@
+ #define CREATE_TRACE_POINTS
+ #include <trace/events/sched.h>
+ 
++#ifdef CONFIG_SPROFILER
++#include <linux/sprofiler.h>
++#endif
++
+ const char *task_event_names[] = {"PUT_PREV_TASK", "PICK_NEXT_TASK",
+ 				  "TASK_WAKE", "TASK_MIGRATE", "TASK_UPDATE"};
+ 
+@@ -2771,6 +2775,9 @@ prepare_task_switch(struct rq *rq, struct task_struct *prev,
+ 	fire_sched_out_preempt_notifiers(prev, next);
+ 	prepare_lock_switch(rq, next);
+ 	prepare_arch_switch(next);
++#ifdef CONFIG_SPROFILER
++	spr_sched_context_switch(rq->cpu, prev, next);
++#endif
+ }
+ 
+ /**
+diff --git a/kernel/sprofiler/Makefile b/kernel/sprofiler/Makefile
+new file mode 100644
+index 0000000..d7d71d1
+--- /dev/null
++++ b/kernel/sprofiler/Makefile
+@@ -0,0 +1,12 @@
++
++obj-y				+= spr_core.o
++obj-y				+= spr_userio.o
++obj-y				+= spr_logger.o
++obj-y				+= spr_debugfs.o
++obj-y				+= spr_init.o
++obj-y				+= spr_cpustat.o
++obj-y				+= spr_input.o
++obj-y				+= spr_panel.o
++obj-y				+= spr_sched.o
++obj-y				+= spr_net.o
++obj-y				+= spr_udp.o
+diff --git a/kernel/sprofiler/spr_common.h b/kernel/sprofiler/spr_common.h
+new file mode 100644
+index 0000000..b06a521
+--- /dev/null
++++ b/kernel/sprofiler/spr_common.h
+@@ -0,0 +1,24 @@
++
++#ifndef __SPR_COMMON
++#define __SPR_COMMON
++#include <linux/sprofiler.h>
++
++#define SPR_MAX_PSTATE_LOG 1000
++#define SPR_MAX_SESSION_LOG 1000
++#define SPR_MAX_SCHEDULE_STAT 1000
++
++
++extern char * spr_log_buffer;
++extern char * spr_log_pos;
++extern int spr_buffer_pos;
++extern char *spr_buf;
++
++extern struct spr_pstate_log pstate_log[SPR_MAX_PSTATE_LOG];
++extern struct spr_session_log session_log[SPR_MAX_SESSION_LOG];
++extern struct spr_info spr_ginfo;
++
++int get_session_info_to_user(struct spr_session_log* ubuf, int maxsize, int *uprval);
++int get_spr_status_to_user(int *state);
++int get_spr_session_status_to_user(int* state);
++
++#endif
+diff --git a/kernel/sprofiler/spr_core.c b/kernel/sprofiler/spr_core.c
+new file mode 100644
+index 0000000..166f27b
+--- /dev/null
++++ b/kernel/sprofiler/spr_core.c
+@@ -0,0 +1,403 @@
++#include <linux/kernel.h>
++#include <linux/string.h>
++#include <linux/sched.h>
++#include <linux/spinlock.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <asm/cputime.h>
++#include <linux/time.h>
++#include <linux/rtc.h>
++#include <linux/irq.h>
++#include <linux/smp.h>
++#include <linux/sched.h>
++#include <linux/cpu.h>
++#include <linux/cpufreq.h>
++#include <linux/kernel_stat.h>
++#include <linux/syscore_ops.h>
++
++#include <linux/notifier.h>
++
++#include <linux/sprofiler.h>
++#include <linux/spr_logger.h>
++
++#include <linux/uaccess.h>
++#include <linux/sched.h>
++
++#include "spr_common.h"
++#include "spr_cpustat.h"
++#include "spr_input.h"
++#include "spr_sched.h"
++#include "spr_net.h"
++#include "spr_panel.h"
++
++#define MAX_WAKEUP_REASON_IRQS 32
++
++static unsigned long last_wakeup_ktime_seconds;
++
++struct spr_session_log session_log[SPR_MAX_SESSION_LOG];
++struct spr_info spr_ginfo;
++int prev_detected_irq[128];
++
++int suspend_ops(void);
++void resume_ops(void);
++void shutdown_ops(void);
++
++static struct syscore_ops my_sysops = {
++	// .suspend = suspend_ops,
++	// .resume = resume_ops,
++	.shutdown = shutdown_ops,
++};
++
++//////////////////////
++static unsigned long prev_jiffy = 0;
++static unsigned int print_c = 0;
++static int printk_ratelimit1(void)
++{
++	if (print_c++ < 10) {
++		prev_jiffy = jiffies;
++		return 1;
++	} else {
++		if (time_after(jiffies, prev_jiffy + 2 * HZ)) {
++				prev_jiffy = jiffies;
++				print_c = 0;
++				return 1;
++			}
++	}
++	/*
++	if (time_after(jiffies, prev_jiffy + 1 * HZ)) {
++		prev_jiffy = jiffies;
++		return 1;
++	}
++	*/
++	return 0;
++}
++///////////////////////
++
++void start_new_session(void);
++void end_session(void);
++
++static inline void write_logs(void)
++{
++	char buf[300];
++	int size;
++	size = spr_cpufreq_write_log(buf);
++	if (size != 0) {
++		spr_log_big_binary(buf, 3, size, 0);
++	}
++	// cpustat
++	size = spr_cpufreq_write_trans_log(buf);
++	if (size != 0)
++		spr_log_nt(buf);
++
++	// input
++	size = spr_input_write_log(buf);
++	if (size != 0)
++		spr_log_nt(buf);
++
++	spr_sched_log();
++
++	spr_net_log();
++}
++
++void init_sprofiler()
++{
++	register_syscore_ops(&my_sysops);
++	spr_cpufreq_stats_init();
++	spr_input_stats_init();
++	spr_net_stats_init();
++
++	if (0) {
++		printk_ratelimit1();
++	}
++
++	// system stat 관련없는 자료형 초기화
++	printk(KERN_WARNING"\tSPR\tinit_sprofiler()\n");
++	spr_ginfo.cur_session = 0;
++	spr_ginfo.state = SPR_STATUS_INITED;
++	memset(prev_detected_irq, -1, sizeof(prev_detected_irq));
++}
++
++
++void reset_sprofiler(void)
++{
++	getnstimeofday(&session_log[0].s_ts);
++	spr_ginfo.cur_session = 0;
++
++	session_log[spr_ginfo.cur_session].wakeup_error = -100;
++	memset(prev_detected_irq, -1, sizeof(prev_detected_irq));
++}
++
++void start_sprofiler()
++{
++	// system stat 관련 자료형 초기화후 로깅시작
++	printk(KERN_WARNING"\n\tSPR\tstart_sprofiler()\n");
++	if (spr_ginfo.state == 0) {
++		printk(KERN_ERR"\tSPR\tspr isn't initialized!()\n");
++		printk(KERN_ERR"\tSPR\tstart_sprofiler() failed\n");
++		return;
++	}
++	reset_sprofiler();
++
++	spr_log("START");
++	//start_new_session();	
++
++	spr_ginfo.state = SPR_STATUS_STARTED;
++	resume_sprofiler();
++}
++
++void resume_sprofiler()
++{
++	printk(KERN_WARNING"\tSPR\tresume_sprofiler()\n");
++	spr_log("RESUME");
++	spr_ginfo.state = SPR_STATUS_RESUMMED;
++
++	memset(prev_detected_irq, -1, sizeof(prev_detected_irq));	//reset known irqs...
++
++	spr_cpufreq_log_resume();
++	spr_input_log_resume();
++	spr_sched_log_resume();
++	spr_net_log_resume();
++	spr_panel_log_resume();
++}
++
++void pause_sprofiler()
++{
++	printk(KERN_WARNING"\tSPR\tpause_sprofiler()\n");
++	spr_log("PAUSE");
++	spr_ginfo.state = SPR_STATUS_PAUSED;
++
++	spr_cpufreq_log_pause();
++	spr_input_log_pause();
++	spr_sched_log_pause();
++	spr_net_log_pause();
++
++	write_logs();
++}
++
++void stop_sprofiler()
++{
++	int cursize, left;
++	if (spr_ginfo.state == SPR_STATUS_RESUMMED)
++		pause_sprofiler();
++
++	printk(KERN_WARNING"\tSPR\tstop_sprofiler()\n");
++	//end_session();
++	spr_ginfo.state = SPR_STATUS_STOPED;
++	spr_log("STOP");
++	spr_get_buf_status(&cursize, &left, NULL);
++	//spr_log("buf : %d, left : %d", cursize, left);	
++}
++//////////////////////////////
++void start_new_session(void)
++{
++	getnstimeofday(&session_log[spr_ginfo.cur_session].s_ts);
++	//spr_log("Session %d start", spr_ginfo.cur_session);
++}
++
++void end_session(void)
++{
++	struct timespec session_length;
++	getnstimeofday(&session_log[spr_ginfo.cur_session].e_ts);
++
++	SUB_TIMESPEC(&session_log[spr_ginfo.cur_session].e_ts,
++			&session_log[spr_ginfo.cur_session].s_ts,
++			&session_length);
++	pr_info("\t=========SPR session %d runtime : %02lu.%09lu\n",
++		spr_ginfo.cur_session, session_length.tv_sec, session_length.tv_nsec);
++	/*
++	spr_log("SPR session %d end runtime : %02lu.%09lu",
++		spr_ginfo.cur_session, session_length.tv_sec, session_length.tv_nsec);
++	*/
++
++	spr_ginfo.cur_session++;
++}
++////////////////////////////////////
++// kernel/power/suspend.c
++// deprecated
++void pm_enter_state_before(int state)
++{
++	// go to suspend, end session...
++	return;
++	if (spr_ginfo.state == 1) {
++		printk(KERN_WARNING"\t==========SPR\tpm_before_enter_state() session %d end\n", spr_ginfo.cur_session);
++		spr_ginfo.state = 2;
++	} else if (spr_ginfo.state == 2) {
++		printk(KERN_WARNING"\t==========SPR\tpm_before_enter_state() session %d end\n", spr_ginfo.cur_session);
++	} else {
++	}
++	// session end
++	if (spr_ginfo.state == 2) {
++		session_log[spr_ginfo.cur_session].goto_suspend_state = state;
++		end_session();
++	}
++}
++
++// deprecated
++void pm_enter_state_after(int error)
++{
++	// wakeup from suspend, start session
++	return;
++	// session start
++	if (spr_ginfo.state == 2) {
++		if (spr_ginfo.cur_session == 1000 -1 ) {
++			printk(KERN_ERR"\t!!!!!!!!!!!!!!!!\tsession overflow!!!\n");
++		} else {
++			start_new_session();
++			printk(KERN_WARNING"\t==========SPR\tpm_after_enter_state() session %d start\n", spr_ginfo.cur_session);
++		}
++		session_log[spr_ginfo.cur_session].wakeup_error = error;
++	} else 
++		printk(KERN_WARNING"\t==========SPR\tpm_after_enter_state() session start\n");
++}
++
++void spr_otg_charge_change(int mode)
++{
++	printk(KERN_WARNING"\tSPR usb mode = %d\n", mode);
++	RETURN_IF_NOT_RESUMMED
++	if (mode == 0) {
++		spr_log("otg_carhge 0");
++	} else {
++		spr_log("otg_carhge 1");
++	}
++}
++/////////////////////////////////////
++void spr_pm_wakeup_reason(int irq, struct irq_desc *desc)
++{
++// http://lxr.free-electrons.com/source/include/linux/irqdesc.h
++	return;
++	//deprecated
++	RETURN_IF_NOT_RESUMMED
++	if (desc != NULL)
++	{
++		if (desc->action && desc->action->name) {
++			spr_log_nt("Resume caused by IRQ %d,%s %s", irq,
++				desc->name, desc->action->name);
++		} else {
++			spr_log_nt("Resume caused by IRQ %d,%s", irq,
++				desc->name);
++		}
++	} else {
++		spr_log_nt("Resume caused by IRQ: %d", irq);
++	}
++	
++}
++
++void _spr_write_wakeup_reason(int *irq_list, int irq_count)
++{
++	int irq_no, buf_offset = 0;
++	struct irq_desc *desc;
++	char buf[MAX_TEXT_LOG_SIZE + 5];
++	int bufoverflow = 0;
++	int prev_detected = 0;
++
++	buf_offset += sprintf(buf, "WIRQ : ");
++
++	for (irq_no = 0; irq_no < irq_count; irq_no++) {
++		desc = irq_to_desc(irq_list[irq_no]);
++		if (desc && desc->action && desc->action->name) {
++			int i = 0;
++			prev_detected = 0;
++			for (i = 0; prev_detected_irq[i] != -1 && i < sizeof(prev_detected_irq)/sizeof(int); i++) {
++				// previously detected irq?
++				if (prev_detected_irq[i] == irq_list[irq_no]) {
++					prev_detected = 1;
++					break;
++				}
++			}
++			if (prev_detected) {
++				// already known irqs, save only irq num
++				buf_offset += sprintf(buf + buf_offset, "%d|",
++						irq_list[irq_no]);
++			} else {
++				// new irq founded, save irq num with name
++				buf_offset += sprintf(buf + buf_offset, "%d %s|",
++					irq_list[irq_no], desc->action->name);
++				prev_detected_irq[i] = irq_list[irq_no];
++			}
++
++		} else
++			buf_offset += sprintf(buf + buf_offset, "%d|",
++					irq_list[irq_no]);
++
++		// check overflow
++		if (buf_offset > MAX_TEXT_LOG_SIZE - 10) {
++			buf[MAX_TEXT_LOG_SIZE-1] = '\0';
++			bufoverflow = 1;
++			break;
++		}
++	}
++
++	if (bufoverflow) {
++		buf_offset = 0;
++		buf_offset += sprintf(buf, "WIRQ : ");
++		for (irq_no = 0; irq_no < irq_count; irq_no++) {
++			buf_offset += sprintf(buf + buf_offset, "%d|", irq_list[irq_no]);
++		}
++	}
++	spr_log_nt(buf, 1);
++}
++//////////////////////////////////
++int spr_suspend_ops(void)
++{
++
++	//printk("\t\tSUS\n");
++	RETURN_ZERO_IF_NOT_RESUMMED
++	spr_log("SUS");
++
++	spr_net_suspend(); // This shoud be called before write_logs
++
++	write_logs();	// write current session logs...
++
++	spr_cpufreq_suspend();	// reset cpufreq data...
++	spr_input_suspend();
++	spr_sched_suspend();
++
++	return 0;
++}
++
++void spr_resume_ops(void)
++{
++
++	int irqs[MAX_WAKEUP_REASON_IRQS];
++	int irq_cnt = 0;
++
++	//printk("\t\tWKU\n");
++
++	last_wakeup_ktime_seconds = get_seconds();
++	RETURN_IF_NOT_RESUMMED
++	spr_log("WKU");
++
++	irq_cnt = spr_get_wakeup_reason(irqs);
++	if (irq_cnt > 0)
++		_spr_write_wakeup_reason(irqs, irq_cnt);
++
++	// cpustat
++	spr_cpufreq_resume();
++	// input
++	spr_input_resume();
++	// sched
++	spr_sched_resume();
++	// net
++	spr_net_resume();
++}
++
++void shutdown_ops(void)
++{
++	printk("\t\tshutdown\n");
++}
++
++void spr_test_log(const char *msg, int n)
++{
++	int i;
++	RETURN_IF_NOT_RESUMMED
++
++	for (i = 0; i < n ; i++)
++	{
++		spr_log(msg);
++	}
++}
++
++int get_last_wakeup_term_seconds(void)
++{
++	return (int)(get_seconds() - last_wakeup_ktime_seconds);
++}
+\ No newline at end of file
+diff --git a/kernel/sprofiler/spr_cpustat.c b/kernel/sprofiler/spr_cpustat.c
+new file mode 100644
+index 0000000..3315cd9
+--- /dev/null
++++ b/kernel/sprofiler/spr_cpustat.c
+@@ -0,0 +1,561 @@
++#include <linux/kernel.h>
++#include <linux/slab.h>
++#include <linux/cpu.h>
++#include <linux/sysfs.h>
++#include <linux/cpufreq.h>
++#include <linux/module.h>
++#include <linux/jiffies.h>
++#include <linux/percpu.h>
++#include <linux/kobject.h>
++#include <linux/spinlock.h>
++#include <linux/notifier.h>
++#include <linux/sort.h>
++#include <linux/err.h>
++#include <asm/cputime.h>
++#include <linux/notifier.h>
++
++#include <linux/spr_logger.h>
++
++#include "spr_common.h"
++
++static spinlock_t cpufreq_stats_lock;
++
++static int bLogging = 0;
++
++struct cpufreq_stats {
++	unsigned int cpu;
++	unsigned int total_trans;
++	unsigned long long  last_time;
++	//unsigned int max_state;
++	//unsigned int state_num;
++	unsigned int last_index;
++	cputime64_t *time_in_state;
++	//unsigned int *freq_table;
++};
++
++
++struct all_freq_table {
++	unsigned int *freq_table;
++	unsigned int table_size;
++};
++//////////
++void debug_print(void);
++/*
++static unsigned long prev_jiffy = 0;
++static unsigned int print_c = 0;
++static int printk_ratelimit1(void)
++{
++	if (print_c++ < 2) {
++		prev_jiffy = jiffies;
++		return 1;
++	} else {
++		if (time_after(jiffies, prev_jiffy + 1 * HZ)) {
++				prev_jiffy = jiffies;
++				print_c = 0;
++				return 1;
++			}
++	}
++	return 0;
++}
++*/
++////////////////
++static struct all_freq_table *all_freq_table;
++static DEFINE_PER_CPU(struct cpufreq_stats *, cpufreq_stats_table);
++
++
++static int freq_table_get_index(unsigned int freq)
++{
++	int index;
++	if (!all_freq_table) {
++		return 0;
++	}
++	for (index = 0; index < all_freq_table->table_size; index++)
++		if (all_freq_table->freq_table[index] == freq)
++			return index;
++	return -1;
++}
++
++
++static int cpufreq_stats_create_table(unsigned int cpu)
++{
++	unsigned int ret = 0;
++	struct cpufreq_stats *stat;
++	//struct cpufreq_policy *data;
++	unsigned int alloc_size;
++
++	if (per_cpu(cpufreq_stats_table, cpu)) {
++		printk("crate table for CPU %d busy failed\n", cpu);
++		return -EBUSY;
++	}
++	stat = kzalloc(sizeof(struct cpufreq_stats), GFP_KERNEL);
++	if ((stat) == NULL) {
++		printk("crate table for CPU %d stat == NULL failed\n", cpu);
++		return -ENOMEM;
++	}
++
++	//data = cpufreq_cpu_get(cpu);
++	///if (data == NULL) {
++	//	ret = -EINVAL;
++	//	printk("crate table for CPU %d data == NULL failed\n", cpu);
++	//	goto error_get_fail;
++	//}
++
++
++	stat->cpu = cpu;
++	per_cpu(cpufreq_stats_table, cpu) = stat;
++
++	alloc_size = all_freq_table->table_size * sizeof(cputime64_t);
++	//stat->max_state = count;
++	stat->time_in_state = kzalloc(alloc_size, GFP_KERNEL);
++
++	if (!stat->time_in_state) {
++		ret = -ENOMEM;
++		printk("crate table for CPU %d ENOMEM failed\n", cpu);
++		goto error_out;
++	}
++	// stat end
++
++	//stat->state_num = j;
++	spin_lock(&cpufreq_stats_lock);
++	stat->last_time = get_jiffies_64();
++	//stat->last_index = freq_table_get_index(policy->cur);
++	spin_unlock(&cpufreq_stats_lock);
++	//cpufreq_cpu_put(data);
++	printk("crate table for CPU %d\n", cpu);
++	return 0;
++error_out:
++	//cpufreq_cpu_put(data);
++//error_get_fail:
++	kfree(stat);
++	per_cpu(cpufreq_stats_table, cpu) = NULL;
++	return ret;
++}
++
++
++static int cpufreq_stats_update(int cpu)
++{
++	struct cpufreq_stats *stat;
++	unsigned long long cur_time;
++
++	cur_time = get_jiffies_64();
++	spin_lock(&cpufreq_stats_lock);
++	stat = per_cpu(cpufreq_stats_table, cpu);
++	if (!stat) {
++		spin_unlock(&cpufreq_stats_lock);
++		return 0;
++	}
++	if (stat->time_in_state && stat->last_time != 0) {
++		stat->time_in_state[stat->last_index] +=
++			cur_time - stat->last_time;
++	}
++	stat->last_time = cur_time;
++	spin_unlock(&cpufreq_stats_lock);
++	return 0;
++}
++
++static void cpufreq_cpu_online(int cpu)
++{
++	struct cpufreq_policy *policy;
++
++	policy = cpufreq_cpu_get(cpu);
++	if (!policy)
++		return;
++
++	cpufreq_cpu_put(policy);
++	return;
++}
++
++static void cpufreq_cpu_dead(int cpu)
++{
++	struct cpufreq_stats *stat;
++	stat = per_cpu(cpufreq_stats_table, cpu);
++	if (!stat)
++		return;
++	cpufreq_stats_update(cpu);
++	return;
++}
++
++static int __cpuinit cpufreq_stat_cpu_callback(struct notifier_block *nfb,
++					       unsigned long action,
++					       void *hcpu)
++{
++	unsigned int cpu = (unsigned long)hcpu;
++
++	if (!bLogging) return 0;
++
++	switch (action) {
++	case CPU_ONLINE:
++		//printk("CPU_ONLINE %d\n", cpu);
++		cpufreq_cpu_online(cpu);
++		//cpufreq_update_policy(cpu);
++		break;
++	case CPU_ONLINE_FROZEN:
++		//cpufreq_update_policy(cpu);
++		//printk("CPU_ONLINE_FROZEN %d\n", cpu);
++		break;
++	case CPU_DOWN_PREPARE:
++		//printk("CPU_PREPARE %d\n", cpu);
++		break;
++	case CPU_DOWN_PREPARE_FROZEN:
++		//cpufreq_stats_free_sysfs(cpu);
++		//printk("CPU_PREPARE_FROZEN %d\n", cpu);
++		break;
++	case CPU_DEAD:
++	case CPU_DEAD_FROZEN:
++		//printk("CPU_DEAD %d\n", cpu);
++		cpufreq_cpu_dead(cpu);
++		break;
++	case CPU_DOWN_FAILED:
++	case CPU_DOWN_FAILED_FROZEN:
++		//cpufreq_stats_create_table_cpu(cpu);
++		//printk("CPU_DOWN_FAILED %d\n", cpu);
++		break;
++	}
++	return NOTIFY_OK;
++}
++
++static int prev_cpufreq[8];
++static int cpufreq_stat_notifier_trans(struct notifier_block *nb,
++		unsigned long val, void *data)
++{
++	struct cpufreq_freqs *freq = data;
++	struct cpufreq_stats *stat;
++	int old_index, new_index;
++
++	if (freq->cpu >= 0 && freq->cpu < 8)
++		prev_cpufreq[freq->cpu] = freq->new;
++
++	if (!bLogging) return 0;
++
++	if (val != CPUFREQ_POSTCHANGE)
++		return 0;
++
++	stat = per_cpu(cpufreq_stats_table, freq->cpu);
++	if (!stat)
++		return 0;
++
++	old_index = stat->last_index;
++	new_index = freq_table_get_index(freq->new);
++
++	//printk("cpu : %d old : %d %d new : %d, %d\n", freq->cpu, freq->old, old_index, freq->new, new_index);
++
++	//We can't do stat->time_in_state[-1]= .. 
++	if (old_index == -1 || new_index == -1 || freq->old == 0/* cpu on case...*/)
++		return 0;
++	
++	if(freq->old == 0 && freq->cpu != 0) {
++		// cpu ON, do not update cputime, set current time
++		// cpu 0 is seted in resume(), so update it.
++		spin_lock(&cpufreq_stats_lock);
++		stat->last_time = get_jiffies_64();
++		stat->last_index = new_index;
++		spin_unlock(&cpufreq_stats_lock);
++	} else
++		cpufreq_stats_update(freq->cpu);
++
++	if (old_index == new_index)
++		return 0;
++
++	spin_lock(&cpufreq_stats_lock);
++	stat->last_index = new_index;
++	stat->total_trans++;
++	spin_unlock(&cpufreq_stats_lock);
++
++	/*
++	if (printk_ratelimit1() && 0) {
++		debug_print();
++	}
++	*/
++	
++	return 0;
++}
++
++static int cpufreq_stat_notifier_policy(struct notifier_block *nb,
++		unsigned long val, void *data)
++{
++	struct cpufreq_policy *policy = data;
++	//struct cpufreq_frequency_table *table;
++	unsigned int cpu = policy->cpu;
++	unsigned long long cur_time;
++	struct cpufreq_stats *stat;
++
++	if (val != CPUFREQ_NOTIFY)
++		return 0;
++
++	if (!bLogging) return 0;
++
++	
++	cur_time = get_jiffies_64();
++	//spr_log("cpufreq_stat_notifier_policy %d %d, %llu\n", cpu, policy->cur, cur_time);
++
++	spin_lock(&cpufreq_stats_lock);
++		
++	stat = per_cpu(cpufreq_stats_table, cpu);
++	if (!stat) {
++		spin_unlock(&cpufreq_stats_lock);	
++		return 0;
++	}
++	stat->last_index = freq_table_get_index(policy->cur);
++	stat->last_time = cur_time;
++	spin_unlock(&cpufreq_stats_lock);	
++	return 0;
++}
++
++/* priority=1 so this will get called before cpufreq_remove_dev */
++static struct notifier_block cpufreq_stat_cpu_notifier __refdata = {
++	.notifier_call = cpufreq_stat_cpu_callback,
++	.priority = 1,
++};
++
++static struct notifier_block notifier_policy_block = {
++	.notifier_call = cpufreq_stat_notifier_policy
++};
++
++static struct notifier_block notifier_trans_block = {
++	.notifier_call = cpufreq_stat_notifier_trans
++};
++
++static void create_all_freq_table(void)
++{
++	struct cpufreq_frequency_table *table;
++	unsigned int freq;
++	int freq_cnt = 0, i;
++	all_freq_table = kzalloc(sizeof(struct all_freq_table), GFP_KERNEL);
++	if (!all_freq_table) {
++		pr_warn("could not allocate memory for all_freq_table\n");
++		return;
++	}
++	
++	table = cpufreq_frequency_get_table(0);
++
++	spin_lock(&cpufreq_stats_lock);
++	for (i = 0; table[i].frequency != CPUFREQ_TABLE_END; i++) {
++		freq = table[i].frequency;
++		if (freq == CPUFREQ_ENTRY_INVALID)
++			continue;
++		freq_cnt++;
++	}
++
++	all_freq_table->freq_table = kzalloc(sizeof(int) * freq_cnt, GFP_KERNEL);
++	all_freq_table->table_size = freq_cnt;
++
++	freq_cnt = 0;
++	for (i = 0; table[i].frequency != CPUFREQ_TABLE_END; i++) {
++			freq = table[i].frequency;
++			if (freq == CPUFREQ_ENTRY_INVALID)
++				continue;
++		all_freq_table->freq_table[freq_cnt] = freq;
++		printk("%d : %d\n", freq_cnt, freq);
++		freq_cnt++;
++	}	
++	spin_unlock(&cpufreq_stats_lock);
++	return;
++}
++
++// interface for spr_core
++int spr_cpufreq_stats_init(void)
++{
++	
++	unsigned int cpu;
++
++	spin_lock_init(&cpufreq_stats_lock);
++	create_all_freq_table();
++	cpufreq_register_notifier(&notifier_policy_block,
++			CPUFREQ_POLICY_NOTIFIER);
++	
++	cpufreq_register_notifier(&notifier_trans_block,
++				CPUFREQ_TRANSITION_NOTIFIER);
++	register_hotcpu_notifier(&cpufreq_stat_cpu_notifier);
++
++	for_each_possible_cpu(cpu) {
++		cpufreq_stats_create_table(cpu);
++	}
++
++	for_each_online_cpu(cpu) {
++		cpufreq_update_policy(cpu);
++	}
++	return 0;
++}
++
++
++void spr_cpufreq_log_resume(void)
++{
++	unsigned int cpu;
++	unsigned long long cur_time;
++	struct cpufreq_stats *stat;
++	int i;
++
++	cur_time = get_jiffies_64();
++
++	printk("spr cpufreq resume\n");
++
++	spin_lock(&cpufreq_stats_lock);
++	
++	for_each_possible_cpu(cpu) {
++		stat = per_cpu(cpufreq_stats_table, cpu);
++		if (!stat) {
++			continue;
++		}
++		for (i = 0; i < all_freq_table->table_size; i++) {
++			stat->time_in_state[i] = 0;
++		}
++		stat->total_trans = 0;
++		stat->last_index = freq_table_get_index(prev_cpufreq[cpu]);
++		stat->last_time = cur_time;
++	}
++	bLogging = 1;
++	spin_unlock(&cpufreq_stats_lock);
++	
++	for_each_online_cpu(cpu) {
++		cpufreq_update_policy(cpu);
++	}
++}
++
++void spr_cpufreq_log_pause(void)
++{
++	unsigned int cpu;
++	printk("spr cpufreq pause\n");
++	for_each_online_cpu(cpu) {
++		cpufreq_stats_update(cpu);
++	}
++	bLogging = 0;
++}
++
++void spr_cpufreq_suspend(void)
++{
++	unsigned int cpu;
++	struct cpufreq_stats *stat;
++	int i;
++
++	spin_lock(&cpufreq_stats_lock);
++	for_each_possible_cpu(cpu) {
++		stat = per_cpu(cpufreq_stats_table, cpu);
++		if (!stat) {
++			spin_unlock(&cpufreq_stats_lock);
++			return;
++		}
++		for (i = 0; i < all_freq_table->table_size; i++) {
++			stat->time_in_state[i] = 0;
++		}
++		stat->total_trans = 0;
++		stat->last_time = 0;
++	}
++	spin_unlock(&cpufreq_stats_lock);
++	return;
++}
++
++void spr_cpufreq_resume(void)
++{
++	//unsigned int cpu;
++	//struct cpufreq_stats *stat;
++	//unsigned long long cur_time;
++	//printk("spr_cpufreq_resume\n");
++
++	/*
++	cur_time = get_jiffies_64();
++	stat = per_cpu(cpufreq_stats_table, 0);
++	stat->last_index = 0;
++	stat->last_time = cur_time;
++	*/
++	/*
++	for_each_online_cpu(cpu) {
++		cpufreq_update_policy(cpu);
++	}
++	*/
++	unsigned int cpu;
++	unsigned long long cur_time;
++	struct cpufreq_stats *stat;
++	int i;
++	cur_time = get_jiffies_64();
++	for_each_possible_cpu(cpu) {
++		stat = per_cpu(cpufreq_stats_table, cpu);
++		if (!stat) {
++			continue;
++		}
++		for (i = 0; i < all_freq_table->table_size; i++) {
++			stat->time_in_state[i] = 0;
++		}
++		stat->total_trans = 0;
++		//stat->last_index = freq_table_get_index(prev_cpufreq[cpu]);
++		stat->last_time = cur_time;
++	}
++	return;
++}
++
++int spr_cpufreq_write_log(char* buf)
++{
++	unsigned int cpu;
++	struct cpufreq_stats *stat;
++	int i;
++	int pos = 0;
++
++	for_each_online_cpu(cpu) {
++		cpufreq_stats_update(cpu);
++	}
++
++	for_each_possible_cpu(cpu) {
++		stat = per_cpu(cpufreq_stats_table, cpu);
++		if (!stat) {
++			continue;
++		}
++		for (i = 0; i < all_freq_table->table_size; i++) {
++			if (stat->time_in_state[i] != 0) {
++				buf[pos] = (unsigned char)((cpu * all_freq_table->table_size) + i);
++				pos++;
++				*(unsigned int*)(buf+pos) = (unsigned int)jiffies_to_msecs(stat->time_in_state[i]);
++				pos += sizeof(int);
++			}
++		}
++	}
++	return pos;
++}
++int spr_cpufreq_write_trans_log(char* buf)
++{
++	unsigned int cpu;
++	struct cpufreq_stats *stat;
++	int pos = 0;
++
++	pos += sprintf(buf + pos, "TRANS : ");
++	spin_lock(&cpufreq_stats_lock);
++	for_each_possible_cpu(cpu) {
++		stat = per_cpu(cpufreq_stats_table, cpu);
++		if (!stat) {
++			continue;
++		}
++		if (stat->total_trans != 0)
++			pos += sprintf(buf + pos, "%d(%d) ", cpu, stat->total_trans);
++
++	}
++	spin_unlock(&cpufreq_stats_lock);
++	if (pos == 6)
++		return 0;
++	return pos;
++}
++
++void debug_print(void)
++{
++	unsigned int cpu;
++	struct cpufreq_stats *stat;
++	int i;
++	char buf[500];
++	int pos = 0;
++	int pstate, executedTime;
++	
++	for_each_possible_cpu(cpu) {
++		stat = per_cpu(cpufreq_stats_table, cpu);
++		if (!stat) {
++			continue;
++		}
++		if (cpu !=0)
++			break;
++		for (i = 0; i < all_freq_table->table_size; i++) {
++			if (stat->time_in_state[i] != 0) {
++				pstate = ((cpu * all_freq_table->table_size) + i);
++				executedTime = (unsigned int)jiffies_to_msecs(stat->time_in_state[i]);
++				pos += sprintf(buf + pos, "%d[%d] ", pstate, executedTime);
++			}
++		}
++	}
++	printk("%s\n", buf);
++	return;
++}
+\ No newline at end of file
+diff --git a/kernel/sprofiler/spr_cpustat.h b/kernel/sprofiler/spr_cpustat.h
+new file mode 100644
+index 0000000..d548205
+--- /dev/null
++++ b/kernel/sprofiler/spr_cpustat.h
+@@ -0,0 +1,13 @@
++#ifndef __SPR_CPUSTAT
++#define __SPR_CPUSTAT
++
++extern int spr_cpufreq_stats_init(void);
++extern void spr_cpufreq_suspend(void);
++extern void spr_cpufreq_resume(void);
++extern void spr_cpufreq_log_resume(void);
++extern void spr_cpufreq_log_pause(void);
++
++extern int spr_cpufreq_write_log(char* buf);
++extern int spr_cpufreq_write_trans_log(char *buf);
++
++#endif
+\ No newline at end of file
+diff --git a/kernel/sprofiler/spr_debugfs.c b/kernel/sprofiler/spr_debugfs.c
+new file mode 100644
+index 0000000..247743d
+--- /dev/null
++++ b/kernel/sprofiler/spr_debugfs.c
+@@ -0,0 +1,272 @@
++#include <linux/kernel.h>
++#include <linux/string.h>
++#include <linux/sched.h>
++#include <linux/spinlock.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <asm/cputime.h>
++#include <linux/time.h>
++#include <linux/rtc.h>
++#include <linux/irq.h>
++#include <linux/smp.h>
++#include <linux/sched.h>
++#include <linux/cpufreq.h>
++
++#include <linux/miscdevice.h>		//for miscdevice APIs
++
++#include <linux/syscore_ops.h>
++
++#include <linux/init.h>
++#include <linux/fs.h>
++#include <linux/kernel_stat.h>
++#include <linux/debugfs.h>
++#include <linux/slab.h>
++#include <linux/mm.h>  /* mmap related stuff */
++
++#include <linux/sprofiler.h>
++#include <linux/spr_logger.h>
++
++#include <linux/uaccess.h>
++#include <linux/sched.h>
++#include <linux/stat.h>
++#include "spr_common.h"
++
++#ifndef VM_RESERVED
++# define  VM_RESERVED   (VM_DONTEXPAND | VM_DONTDUMP)
++#endif
++
++struct dentry  *f_spr;
++
++
++struct mmap_info {
++	char *data;	/* the data */
++	int reference;       /* how many times it is mmapped */  	
++};
++
++/* keep track of how many times it is mmapped */
++void mmap_open(struct vm_area_struct *vma)
++{
++	struct mmap_info *info = (struct mmap_info *)vma->vm_private_data;
++	info->reference++;
++}
++
++void mmap_close(struct vm_area_struct *vma)
++{
++	struct mmap_info *info = (struct mmap_info *)vma->vm_private_data;
++	info->reference--;
++}
++
++static int mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
++{
++	struct page *page;
++	struct mmap_info *info;
++	unsigned long offset = vmf->pgoff << PAGE_SHIFT;
++
++	// printk("spr : mmap_fault pgoff : %lu offset : %lu\n", vmf->pgoff, offset);
++
++	/* the data is in vma->vm_private_data */
++	info = (struct mmap_info *)vma->vm_private_data;
++	if (!info->data) {
++		printk("no data\n");
++		return -1;	
++	}
++	/* get the page */
++	page = virt_to_page(info->data + offset);
++	/* increment the reference count of this page */
++	//get_page(page);
++	SetPageReserved(page);
++	vmf->page = page;
++
++	return 0;
++}
++
++struct vm_operations_struct mmap_vm_ops = {
++	.open =     mmap_open,
++	.close =    mmap_close,
++	.fault =    mmap_fault,
++};
++
++int my_mmap(struct file *filp, struct vm_area_struct *vma)
++{
++	vma->vm_ops = &mmap_vm_ops;
++	vma->vm_flags |= VM_RESERVED;
++	/* assign the file private data to the vm private data */
++	vma->vm_private_data = filp->private_data;
++	mmap_open(vma);
++	return 0;
++}
++
++int my_close(struct inode *inode, struct file *filp)
++{
++	struct mmap_info *info = filp->private_data;
++	//free_pages((unsigned long)info->data, 10);
++    	kfree(info);
++	filp->private_data = NULL;
++	return 0;
++}
++
++int my_open(struct inode *inode, struct file *filp)
++{
++	struct mmap_info *info = kmalloc(sizeof(struct mmap_info), GFP_KERNEL);
++	/* obtain new memory */
++	//info->data = (char *)__get_free_pages(GFP_KERNEL, 10); //1024page = 4MB
++	info->data = spr_buf;
++	/* assign this info struct to the file */
++	filp->private_data = info;
++	return 0;
++}
++
++#define DEV_MAJOR_NO	10
++#define DEV_NAME "misc_spr"
++
++
++#define WRITE_START_SPROFILER		_IOW(DEV_MAJOR_NO,0,u32)
++#define WRITE_STOP_SPROFILER		_IOW(DEV_MAJOR_NO,1,u32)
++
++#define WRITE_PAUSE_MONITORING	_IOW(DEV_MAJOR_NO,2,u32)
++#define WRITE_RESUME_MONITORING	_IOW(DEV_MAJOR_NO,3,u32)
++
++#define READ_LOG_BUF_STATUS			_IOR(DEV_MAJOR_NO,4,u32)
++
++#define READ_PROFILE_RESULT		_IOWR(DEV_MAJOR_NO,5,u32)
++#define READ_PROFILE_LOG		_IOWR(DEV_MAJOR_NO,6,u32)
++
++#define READ_PROFILEER_STATUS		_IOWR(DEV_MAJOR_NO,7,u32)
++#define WRITE_PROFILEER_BUF_CLEAR		_IOWR(DEV_MAJOR_NO,8,u32)
++#define WRITE_PROFILEER_LOG		_IOWR(DEV_MAJOR_NO,9,u32)
++
++#define READ_SESSION_STATUS		_IOWR(DEV_MAJOR_NO,10,u32)
++
++long my_ioctl(struct file *fp, unsigned int cmd, unsigned long arg)
++{
++	u32 rval = 0;
++	//u32 revtsel = 0;
++	//unsigned long long rccnt = 0;
++	unsigned int argarru32[3];
++	int tmparr[3];
++	//unsigned long long argarr[2];
++	char buf[128];
++	int rtemp;
++
++	printk(KERN_ALERT "sprofiler_ctrl ioctl cmd : %u type : %u nr : %u arg : %lu\n", cmd, _IOC_TYPE(cmd), _IOC_NR(cmd), arg);
++/*
++	printk(KERN_ALERT "nr : %u type %u size %u dir %u\n", _IOC_NR(cmd), _IOC_TYPE(cmd),
++		_IOC_SIZE(cmd), _IOC_DIR(cmd));
++*/
++	/* Implement here */
++	switch(cmd) {
++		case WRITE_START_SPROFILER:
++			start_sprofiler();
++		break;
++		case WRITE_STOP_SPROFILER:
++			stop_sprofiler();
++		break;
++		case WRITE_RESUME_MONITORING:
++			resume_sprofiler();
++		break;
++		case WRITE_PAUSE_MONITORING:
++			pause_sprofiler();
++		break;
++		case READ_LOG_BUF_STATUS:
++			if (!access_ok(VERIFY_READ, (void*)arg, sizeof(argarru32)))
++				return -EFAULT;
++			spr_get_buf_status(&tmparr[0], &tmparr[1], &tmparr[2]);
++			rval = copy_to_user((void*)arg, tmparr, sizeof(tmparr));
++		break;
++
++		case READ_PROFILE_RESULT:
++			if (!access_ok(VERIFY_READ, (void*)arg, sizeof(argarru32)))
++				return -EFAULT;
++			rval = copy_from_user(argarru32, (void*)arg, sizeof(argarru32));
++			rval = get_session_info_to_user((void*)argarru32[0], argarru32[1], (void*)argarru32[2]);
++		break;
++		case READ_PROFILE_LOG:
++			if (!access_ok(VERIFY_READ, (void*)arg, sizeof(argarru32)))
++				return -EFAULT;
++			rval = copy_from_user(argarru32, (void*)arg, sizeof(argarru32));
++			rval = spr_getlogs_to_user((void*)argarru32[0], argarru32[1], (void*)argarru32[2]);
++		break;
++		case READ_PROFILEER_STATUS:
++			if (!access_ok(VERIFY_READ, (void*)arg, sizeof(u32)))
++				return -EFAULT;
++			rval = get_spr_status_to_user((int*)arg);
++		break;
++		case WRITE_PROFILEER_BUF_CLEAR:
++			spr_buf_clear();
++			rval = 0;
++		break;
++		case WRITE_PROFILEER_LOG:
++			//int spr_log_(char *log, bool btime)
++			if (!access_ok(VERIFY_READ, (void*)arg, sizeof(u32)))
++				return -EFAULT;
++			rtemp = strncpy_from_user(buf, (char*)arg, sizeof(buf)-1);
++			buf[49] = 0;
++			if (rtemp != -EFAULT)
++				spr_log_(buf, 1);
++			rval = 0;
++		break;
++		case READ_SESSION_STATUS:
++			if (!access_ok(VERIFY_READ, (void*)arg, sizeof(u32)))
++				return -EFAULT;
++			rval = get_spr_session_status_to_user((int*)arg);
++		break;
++		default:
++			printk("\tsprofiler_ctrl_device_ioctl : unknown cmd %u\n", cmd);
++			return -1;
++		break;
++	}
++	return rval;
++}
++
++static const struct file_operations my_fops = {
++	.open = my_open,
++	.unlocked_ioctl = my_ioctl,
++	.release = my_close,
++	.mmap = my_mmap,
++};
++
++static struct miscdevice spr_misc_device = {
++	/* Implement here */
++	.minor = MISC_DYNAMIC_MINOR,
++	.name = DEV_NAME,
++	.fops = &my_fops
++};
++
++int register_spr_misc_driver(void)
++{
++	/* Implement here */
++	int result;
++
++	result = misc_register(&spr_misc_device);
++
++	if(result <0)
++	{
++		printk(KERN_ALERT "spr_misc_driver : init failed\n");
++		return result;
++	}
++	printk(KERN_ALERT "spr_misc_driver : init success\n");
++	return 0;
++}
++
++int sprofiler_init_debugfs(char *aspr_buf, int size)
++{
++	int i;
++	if (!aspr_buf) {
++		printk(KERN_ERR"\t\tsprofiler_init failed\n");
++	} else {
++		spr_init_log(aspr_buf, size);
++	}
++  
++	for (i = 0; i < size; i+= PAGE_SIZE) {  
++		//SetPageReserved(vmalloc_to_page((void *)(((unsigned long)vmalloc_area) + i)));  
++		SetPageReserved(virt_to_page(((unsigned long)aspr_buf) + i));  
++		ClearPageReferenced(virt_to_page(((unsigned long)aspr_buf) + i));  
++	}  
++
++
++	f_spr = debugfs_create_file("spr", S_IFREG | S_IRUGO  | S_IWUGO, NULL, NULL, &my_fops);
++
++	register_spr_misc_driver();
++
++	return 0;
++}
+diff --git a/kernel/sprofiler/spr_init.c b/kernel/sprofiler/spr_init.c
+new file mode 100644
+index 0000000..7e20e7c
+--- /dev/null
++++ b/kernel/sprofiler/spr_init.c
+@@ -0,0 +1,49 @@
++#include <linux/kernel.h>
++#include <linux/string.h>
++#include <linux/sched.h>
++#include <linux/spinlock.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <asm/cputime.h>
++#include <linux/time.h>
++#include <linux/rtc.h>
++#include <linux/irq.h>
++#include <linux/smp.h>
++#include <linux/sched.h>
++#include <linux/cpufreq.h>
++
++#include <linux/syscore_ops.h>
++
++#include <linux/init.h>
++#include <linux/fs.h>
++#include <linux/kernel_stat.h>
++#include <linux/debugfs.h>
++#include <linux/slab.h>
++#include <linux/mm.h>  /* mmap related stuff */
++
++#include <linux/sprofiler.h>
++#include <linux/spr_logger.h>
++
++#include <linux/uaccess.h>
++#include <linux/sched.h>
++#include "spr_common.h"
++
++char *spr_buf;
++
++
++static int __init sprofiler_init(void)
++{
++	int i;
++	spr_buf = (char *)__get_free_pages(GFP_KERNEL, 10); //1024page = 4MB
++	for (i = 0; i < 1024 * PAGE_SIZE; i+= PAGE_SIZE) {  
++		SetPageReserved(virt_to_page(((unsigned long)spr_buf) + i));  
++	}  
++	sprofiler_init_debugfs(spr_buf, PAGE_SIZE<<10);
++
++	init_sprofiler();
++
++	printk(KERN_WARNING"\t\tsprofiler_init end\n");
++	return 0;
++}
++
++late_initcall(sprofiler_init);
+\ No newline at end of file
+diff --git a/kernel/sprofiler/spr_input.c b/kernel/sprofiler/spr_input.c
+new file mode 100644
+index 0000000..fa2f25b
+--- /dev/null
++++ b/kernel/sprofiler/spr_input.c
+@@ -0,0 +1,224 @@
++#include <linux/kernel.h>
++#include <linux/jiffies.h>
++#include <linux/time.h>
++#include <linux/rtc.h>
++#include <linux/sprofiler.h>
++#include <linux/spr_logger.h>
++#include <linux/input.h>
++#include <linux/spinlock.h>
++
++#include "spr_udp.h"
++
++DEFINE_SPINLOCK(timer_lock);
++
++struct timeval last_pressed_time;
++
++static struct timer_list my_timer;
++
++static int state = 0;
++static unsigned int touch_released_cnt = 0;
++static int abs_x = 0;
++static int abs_y = 0;
++
++static void on_write_delayed_touch(void);		// for delayed touch logging
++static void write_delayed_touch_log(int event);
++
++static inline void input_touch_released(void)
++{
++	touch_released_cnt++;
++	//printk("touch_released_cnt++\n");
++}
++
++unsigned int spr_get_touch_released_cnt(void)
++{
++	return touch_released_cnt;
++}
++
++void spr_input_report_abs(unsigned int code, int value)
++{
++	if (code == ABS_MT_POSITION_X) {
++		abs_x = value;
++	} else if (code == ABS_MT_POSITION_Y) {
++		abs_y = value;
++		//printk("abs %d %d\n", abs_x, abs_y);
++	}
++	if (state == 3) {
++		if (code == ABS_MT_POSITION_Y) {
++#ifdef CONFIG_MACH_MSM8974_HAMMERHEAD
++			// send_touch_event(1, abs_x, abs_y);
++			// send touch event, disabled !!!
++#endif
++			state = 1;
++		}
++	} else {
++		state = 1;	
++	}
++}
++
++
++void spr_input_sync(void)
++{
++	//printk("input sync\n");
++	switch (state) {
++		case 1:
++			state = 2;
++		break;
++		case 2:
++			state = 3;
++			input_touch_released();
++			do_gettimeofday(&last_pressed_time);
++			on_write_delayed_touch();	// for delayed term touch logging
++#ifdef CONFIG_MACH_MSM8974_HAMMERHEAD
++			// send_touch_event(0, abs_x, abs_y);
++			// send touch event, disabled !!!
++#endif
++		break;
++	}
++}
++
++void spr_input_report_key(unsigned int code, int value)
++{
++	static long pressed_start = 0;
++	static int pressed_time;
++	// 116 1 // 116 0
++
++	RETURN_IF_NOT_RESUMMED
++	
++	if (value == 1)
++		pressed_start = jiffies;
++	else if (value == 0) {
++		if (jiffies >= pressed_start)
++			pressed_time = jiffies - pressed_start;
++		else {
++			pressed_time = (MAX_JIFFY_OFFSET - pressed_start) + jiffies;
++		}
++		if (pressed_time < 100000) {
++			if (code == 116) { /* SC System Power Down */
++				spr_log("KP %d", pressed_time);
++				printk("KP %d\n", pressed_time);
++			} else if (code == 142) { /* SC System Sleep */
++				spr_log("KS %d", pressed_time);
++				printk("KS %d\n", pressed_time);
++			} else {
++				spr_log("K(%d) %d", code, pressed_time);
++				printk("K(%d) %d\n", code, pressed_time);
++			}
++
++		}
++	}
++}
++
++int spr_input_stats_init(void)
++{
++	state = 0;
++	touch_released_cnt = 0;
++	return 0;
++}
++void spr_input_suspend(void)
++{	
++	return;
++}
++void spr_input_resume(void)
++{
++	state = 0;
++	touch_released_cnt = 0;
++	return;
++}
++void spr_input_log_resume(void)
++{
++	state = 0;
++	touch_released_cnt = 0;
++	return;
++}
++void spr_input_log_pause(void)
++{
++	return;
++}
++
++int spr_input_write_log(char *buf)
++{
++	if (touch_released_cnt == 0)
++		return 0;
++	return sprintf(buf, "TOUCH %d", touch_released_cnt);
++}
++
++/* Term Touch Log */
++#define MINIMUM_DELAYED_TOUCH_TERM (HZ*10)
++static int is_timer_started = 0;
++static struct timeval logged_last_pressed_time;
++
++static void on_write_delayed_touch(void)
++{
++	// on touch event
++	RETURN_IF_NOT_RESUMMED
++	spin_lock(&timer_lock);
++	if (!is_timer_started) {
++		// first touch after screen on or longtime ago
++		write_delayed_touch_log(1);
++		mod_timer(&my_timer, jiffies + MINIMUM_DELAYED_TOUCH_TERM);
++		is_timer_started = 1;
++	}
++	spin_unlock(&timer_lock);
++}
++
++static void write_delayed_touch_log(int event)
++{
++	unsigned long local_time;
++	struct rtc_time tm;
++	local_time = (u32)(last_pressed_time.tv_sec - (/*sys_tz.tz_minuteswest*/ -9 * 60 * 60));
++	rtc_time_to_tm(local_time, &tm);
++	//printk("%04d-%02d-%02d %02d:%02d:%02d.%lu\n", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, last_pressed_time.tv_usec);
++	if (event == 1)
++		spr_log_nt("DT %04d-%02d-%02d %02d:%02d:%02d.%06lu FT", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, last_pressed_time.tv_usec);
++	else if (event == 2)
++		spr_log_nt("DT %04d-%02d-%02d %02d:%02d:%02d.%06lu LT", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, last_pressed_time.tv_usec);
++	else
++		spr_log_nt("DT %04d-%02d-%02d %02d:%02d:%02d.%06lu", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, last_pressed_time.tv_usec);
++	//printk("DT %04d-%02d-%02d %02d:%02d:%02d.%06lu\n", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, last_pressed_time.tv_usec);
++	memcpy(&logged_last_pressed_time, &last_pressed_time, sizeof(struct timeval));
++	return;
++}
++
++void spr_input_screen_off(void)
++{
++	RETURN_IF_NOT_RESUMMED
++	//printk("dt screen off\n");
++	spin_lock(&timer_lock);
++	if (is_timer_started) {
++		if (memcmp(&logged_last_pressed_time, &last_pressed_time, sizeof(struct timeval)) != 0) {
++			// there are new touch in timer term, write log
++			write_delayed_touch_log(2);
++		}
++		//printk("dt timer delete\n");
++		del_timer(&my_timer);
++		is_timer_started = 0;
++	}
++	spin_unlock(&timer_lock);
++}
++
++static void spr_write_delayed_touch_timer_func(unsigned long dummy)
++{
++	spin_lock(&timer_lock);
++	if (memcmp(&logged_last_pressed_time, &last_pressed_time, sizeof(struct timeval)) != 0) {
++		// there are new touch in timer term, write log
++		mod_timer(&my_timer, jiffies + 10 * HZ);
++		is_timer_started = 1;
++		write_delayed_touch_log(0);
++	} else {
++		// there are no touch, do not set timer...
++		//printk("dt timer delete\n");
++		is_timer_started = 0;
++	}
++	spin_unlock(&timer_lock);
++}
++
++// timer init
++static int __init spr_input_late_init(void)
++{
++	init_timer(&my_timer);
++	my_timer.function = spr_write_delayed_touch_timer_func;
++	
++	return 0;
++}
++
++late_initcall(spr_input_late_init);
+\ No newline at end of file
+diff --git a/kernel/sprofiler/spr_input.h b/kernel/sprofiler/spr_input.h
+new file mode 100644
+index 0000000..e9feeb5
+--- /dev/null
++++ b/kernel/sprofiler/spr_input.h
+@@ -0,0 +1,16 @@
++#ifndef __SPR_INPUT
++#define __SPR_INPUT
++
++
++int spr_input_stats_init(void);
++void spr_input_suspend(void);
++void spr_input_resume(void);
++void spr_input_log_resume(void);
++void spr_input_log_pause(void);
++
++int spr_input_write_log(char *buf);
++unsigned int spr_get_touch_released_cnt(void);
++
++void spr_input_screen_off(void);	// for delayed touch logging
++
++#endif
+\ No newline at end of file
+diff --git a/kernel/sprofiler/spr_logger.c b/kernel/sprofiler/spr_logger.c
+new file mode 100644
+index 0000000..5af6526
+--- /dev/null
++++ b/kernel/sprofiler/spr_logger.c
+@@ -0,0 +1,291 @@
++#include <linux/kernel.h>
++#include <linux/string.h>
++#include <linux/sched.h>
++#include <linux/spinlock.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <asm/cputime.h>
++#include <linux/uaccess.h>
++#include <linux/slab.h>
++#include <linux/sprofiler.h>
++#include <linux/spr_logger.h>
++#include <linux/spinlock.h>
++
++#define MAX_TEXT_LOG_SIZE 512
++
++static int initialized;
++static char *log_buf;
++static int buf_size;
++static int spr_buffer_pos;
++static int log_cnt;
++
++DEFINE_SPINLOCK(log_lock);
++unsigned long flags;
++
++void spr_get_buf_status(int *cursize, int *left, int *total)
++{
++	if (cursize != NULL) {
++		*cursize = spr_buffer_pos;
++	}
++	if (left != NULL) {
++		*left = buf_size - (spr_buffer_pos);
++	}
++	if (total != NULL) {
++		*total = buf_size;
++	}
++	printk(KERN_WARNING"spr_buf_status : %d/%d, %d left\n", spr_buffer_pos,
++			buf_size, buf_size - spr_buffer_pos);
++}
++
++int spr_get_log_size()
++{
++	return spr_buffer_pos;
++}
++
++inline int my_strcpy(char *dest, char *src)
++{
++	int i = 0;
++	while (*src != '\0') {
++		*dest = *src;
++		src++;
++		dest++;
++		i++;
++	}
++	*dest = '\0';
++	dest++;
++	i++;
++	return i;
++}
++
++int spr_init_log(char *buf, const int bufsize)
++{
++	log_buf = buf;
++	buf_size = bufsize;
++	log_cnt = 0;
++	spr_buffer_pos = 0;
++	initialized = 1;
++	*(int*)buf = -1;
++	printk("spr_init_log(%p %d)", buf, bufsize);
++	spr_log("spr_init_log(%p %d)", buf, bufsize);
++	return 0;
++}
++
++int spr_init_log_self(const int bufsize)
++{//not used
++	void *ptr = kmalloc(bufsize, GFP_KERNEL);
++	if (!ptr) {
++		return -1;
++	}
++	spr_init_log((char*)ptr, bufsize);
++	return 0;
++}
++
++void spr_buf_clear()
++{
++	log_cnt = 0;
++	spr_buffer_pos = 0;
++	*(int*)(log_buf + 0) = -1;	
++}
++
++int spr_log_nt(const char *fmt, ...)
++{
++	va_list args;
++	int i;
++	char buf[MAX_TEXT_LOG_SIZE];
++
++	va_start(args, fmt);
++	i=vsnprintf(buf, MAX_TEXT_LOG_SIZE, fmt, args);
++	va_end(args);
++	buf[i] = '\0';
++	spr_log_(buf, 0);
++	return i;
++}
++
++int spr_log(const char *fmt, ...)
++{
++	va_list args;
++	int i;
++	char buf[MAX_TEXT_LOG_SIZE];
++
++	va_start(args, fmt);
++	i=vsnprintf(buf, MAX_TEXT_LOG_SIZE, fmt, args);
++	va_end(args);
++	buf[i] = '\0';
++	spr_log_(buf, 1);
++	return i;
++}
++
++int spr_log_(char *log, bool btime)
++{
++	int size;
++	int start_buffer_pos;
++	struct timespec now_ts;
++	spin_lock_irqsave(&log_lock, flags);
++	// clock_gettime(CLOCK_REALTIME,&now_ts);
++	if (spr_buffer_pos > buf_size - MAX_TEXT_LOG_SIZE) {
++		printk(KERN_ERR"\t!!!!!!!!!!!!!!!!!!!!Log buffer overflow\n");
++		log = "buffer overflow";
++		spin_unlock_irqrestore(&log_lock, flags);
++		return 0;
++	}
++
++	// index
++	//*(int*)(log_buf + spr_buffer_pos) = log_cnt;		// change index last time, skip
++	start_buffer_pos = spr_buffer_pos;
++	spr_buffer_pos += sizeof(int);
++
++	if (btime)
++	{
++		getnstimeofday(&now_ts);
++		//type
++		*(char*)(log_buf + spr_buffer_pos) = PACKET_TEXT_WT;
++		spr_buffer_pos += sizeof(char);
++		// timespec
++		memcpy(log_buf + spr_buffer_pos, &now_ts, sizeof(now_ts));
++		spr_buffer_pos += sizeof(now_ts);
++	} else {
++		//type
++		*(char*)(log_buf + spr_buffer_pos) = PACKET_TEXT;
++		spr_buffer_pos += sizeof(char);
++	}
++
++	// meg
++	size = my_strcpy(log_buf + spr_buffer_pos, log);
++	spr_buffer_pos += size;
++
++	// set last item notifier
++	*(int*)(log_buf + spr_buffer_pos) = -1;
++
++	*(int*)(log_buf + start_buffer_pos) = log_cnt;		// now update index
++	log_cnt++;
++	spin_unlock_irqrestore(&log_lock, flags);
++	return log_cnt;
++}
++
++int spr_log_binary(char *log, int subtype, int size, bool btime)
++{
++	int start_buffer_pos;
++	struct timespec now_ts;
++	spin_lock_irqsave(&log_lock, flags);
++	// clock_gettime(CLOCK_REALTIME,&now_ts);
++	if (spr_buffer_pos > buf_size - MAX_TEXT_LOG_SIZE) {
++		printk(KERN_ERR"\t!!!!!!!!!!!!!!!!!!!!Log buffer overflow\n");
++		log = "buffer overflow";
++		spin_unlock_irqrestore(&log_lock, flags);
++		return 0;
++	}
++
++	if (size > 256) {
++		printk(KERN_ERR"\t!!!!!!!!!!!!!!!!!!!!spr_log_binary > 256\n");
++		return 0;
++	}
++
++	// index
++	//*(int*)(log_buf + spr_buffer_pos) = log_cnt;		// change index last time, skip
++	start_buffer_pos = spr_buffer_pos;
++	spr_buffer_pos += sizeof(int);	//skip index position...
++
++	if (btime)
++	{
++		getnstimeofday(&now_ts);
++		//type
++		*(char*)(log_buf + spr_buffer_pos) = PACKET_BINARY_WT;
++		spr_buffer_pos += sizeof(char);
++		// timespec
++		memcpy(log_buf + spr_buffer_pos, &now_ts, sizeof(now_ts));
++		spr_buffer_pos += sizeof(now_ts);
++	} else {
++		//type
++		*(char*)(log_buf + spr_buffer_pos) = PACKET_BINARY;
++		spr_buffer_pos += sizeof(char);
++	}
++
++	// sub type 1 byte
++	*(unsigned char*)(log_buf + spr_buffer_pos) = (unsigned char)subtype;
++	spr_buffer_pos += 1;
++
++	// binary size 1 byte
++	*(unsigned char*)(log_buf + spr_buffer_pos) = (unsigned char)size;
++	spr_buffer_pos += 1;
++
++	// binary data
++	memcpy(log_buf + spr_buffer_pos, log, size);
++	spr_buffer_pos += size;
++
++	// set last item notifier
++	*(int*)(log_buf + spr_buffer_pos) = -1;
++
++	*(int*)(log_buf + start_buffer_pos) = log_cnt;		// now update index
++	log_cnt++;
++	spin_unlock_irqrestore(&log_lock, flags);
++	return log_cnt;
++}
++
++int spr_log_big_binary(char *log, int subtype, int size, bool btime)
++{
++	int start_buffer_pos;
++	struct timespec now_ts;
++	spin_lock_irqsave(&log_lock, flags);
++	// clock_gettime(CLOCK_REALTIME,&now_ts);
++	if (spr_buffer_pos > buf_size - MAX_TEXT_LOG_SIZE) {
++		printk(KERN_ERR"\t!!!!!!!!!!!!!!!!!!!!Log buffer overflow\n");
++		log = "buffer overflow";
++		spin_unlock_irqrestore(&log_lock, flags);
++		return 0;
++	}
++
++	if (size > 256 * 256) {
++		printk(KERN_ERR"\t!!!!!!!!!!!!!!!!!!!!spr_log_binary > 256\n");
++		return 0;
++	}
++
++	// index
++	//*(int*)(log_buf + spr_buffer_pos) = log_cnt;		// change index last time, skip
++	start_buffer_pos = spr_buffer_pos;
++	spr_buffer_pos += sizeof(int);	//skip index position...
++
++	if (btime)
++	{
++		getnstimeofday(&now_ts);
++		//type
++		*(char*)(log_buf + spr_buffer_pos) = PACKET_BIG_BINARY_WT;
++		spr_buffer_pos += sizeof(char);
++		// timespec
++		memcpy(log_buf + spr_buffer_pos, &now_ts, sizeof(now_ts));
++		spr_buffer_pos += sizeof(now_ts);
++	} else {
++		//type
++		*(char*)(log_buf + spr_buffer_pos) = PACKET_BIG_BINARY;
++		spr_buffer_pos += sizeof(char);
++	}
++
++	// sub type 1 byte
++	*(unsigned char*)(log_buf + spr_buffer_pos) = (unsigned char)subtype;
++	spr_buffer_pos += 1;
++
++	// binary size 2 byte
++	*(unsigned short*)(log_buf + spr_buffer_pos) = (unsigned short)size;
++	spr_buffer_pos += 2;
++
++	// binary data
++	memcpy(log_buf + spr_buffer_pos, log, size);
++	spr_buffer_pos += size;
++
++	// set last item notifier
++	*(int*)(log_buf + spr_buffer_pos) = -1;
++
++	*(int*)(log_buf + start_buffer_pos) = log_cnt;		// now update index
++	log_cnt++;
++	spin_unlock_irqrestore(&log_lock, flags);
++	return log_cnt;
++}
++
++int spr_getlogs_to_user(char *ubuf, int maxsize, int *ulog_size)
++{
++	int size, rval;
++	size = maxsize > spr_buffer_pos ? spr_buffer_pos : maxsize;
++	printk(KERN_WARNING"SPR\tspr_getlogs_to_user() %d\n", size);
++	rval = copy_to_user(ubuf, log_buf, size + 4);
++	*ulog_size = size;
++	return rval;
++}
+diff --git a/kernel/sprofiler/spr_net.c b/kernel/sprofiler/spr_net.c
+new file mode 100644
+index 0000000..342d9f7
+--- /dev/null
++++ b/kernel/sprofiler/spr_net.c
+@@ -0,0 +1,194 @@
++#include <linux/kernel.h>
++#include <linux/string.h>
++#include <linux/spinlock.h>
++#include <linux/netdevice.h>
++#include <linux/spr_logger.h>
++
++struct net_stats_info {
++	char name[16];
++	struct rtnl_link_stats64 stats;
++};
++struct net_stats_info saved_start_stats[2];
++struct net_stats_info saved_end_stats[2];
++
++struct net_stats_log {
++	unsigned long long rx_bytes;
++	unsigned int rx_packets;
++	unsigned int rx_errs;
++	unsigned int rx_drop;
++	unsigned int rx_fifo;
++	unsigned int rx_frame;
++	unsigned int rx_compressed;
++	unsigned int rx_multicast;
++
++	unsigned long long tx_bytes;
++	unsigned int tx_packets;
++	unsigned int tx_errs;
++	unsigned int tx_drop;
++	unsigned int tx_fifo;
++	unsigned int tx_colls;
++	unsigned int tx_carrier;
++	unsigned int tx_compressed;
++};
++
++/*
++void print_dev(struct net_device *dev) {
++	struct rtnl_link_stats64 temp;
++	const struct rtnl_link_stats64 *stats = dev_get_stats(dev, &temp);
++
++	printk("%6s: %7llu %7llu %4llu %4llu %4llu %5llu %10llu %9llu "
++		   "%8llu %7llu %4llu %4llu %4llu %5llu %7llu %10llu\n",
++		   dev->name,
++		    stats->rx_bytes,
++		     stats->rx_packets,
++		   stats->rx_errors,
++		   stats->rx_dropped + stats->rx_missed_errors,
++		   stats->rx_fifo_errors,
++		   stats->rx_length_errors + stats->rx_over_errors + stats->rx_crc_errors + stats->rx_frame_errors,
++		   stats->rx_compressed,
++		    stats->multicast,
++		   stats->tx_bytes,
++		    stats->tx_packets,
++		   stats->tx_errors,
++		    stats->tx_dropped,
++		   stats->tx_fifo_errors,
++		    stats->collisions,
++		   stats->tx_carrier_errors +	 stats->tx_aborted_errors + stats->tx_window_errors + stats->tx_heartbeat_errors,
++		   stats->tx_compressed);
++}
++
++void test(void) {
++	struct net_device *dev;
++	dev = first_net_device(&init_net);
++	read_lock(&dev_base_lock);
++	while (dev) {
++	    printk(KERN_INFO "found [%s]\n", dev->name);
++	    print_dev(dev);
++	    dev = next_net_device(dev);
++	}
++	read_unlock(&dev_base_lock);
++}
++*/
++int save_stats(struct net_stats_info *info, const char *name)
++{
++	struct net_device *dev;
++	const struct rtnl_link_stats64 *stats;
++	struct rtnl_link_stats64 temp;
++	dev = first_net_device(&init_net);
++	read_lock(&dev_base_lock);
++	while (dev) {
++	    //printk(KERN_INFO "found [%s]\n", dev->name);
++	    if (strcmp(dev->name, name) == 0) {
++	    		stats = dev_get_stats(dev, &temp);
++	    		strncpy(info->name, dev->name, 15);
++			memcpy(&info->stats, stats, sizeof(struct rtnl_link_stats64));
++	    }
++	    dev = next_net_device(dev);
++	}
++	read_unlock(&dev_base_lock);
++	return 0;
++}
++
++int stats_to_stats_log(struct rtnl_link_stats64 *start, struct rtnl_link_stats64 *end, struct net_stats_log *stats_log)
++{
++	
++	stats_log->rx_bytes = end->rx_bytes - start->rx_bytes;
++	stats_log->rx_packets = end->rx_packets - start->rx_packets;
++	stats_log->rx_errs = end->rx_errors - start->rx_errors;
++	stats_log->rx_drop = end->rx_dropped - start->rx_dropped + end->rx_missed_errors - start->rx_missed_errors;
++	stats_log->rx_fifo = end->rx_fifo_errors - start->rx_fifo_errors;
++	stats_log->rx_frame = (end->rx_length_errors + end->rx_over_errors + end->rx_crc_errors + end->rx_frame_errors) -
++							(start->rx_length_errors + start->rx_over_errors + start->rx_crc_errors + start->rx_frame_errors);
++	stats_log->rx_compressed = end->rx_compressed - start->rx_compressed;
++	stats_log->rx_multicast = end->multicast - start->multicast;
++
++	stats_log->tx_bytes = end->tx_bytes - start->tx_bytes;
++	stats_log->tx_packets = end->tx_packets - start->tx_packets;
++	stats_log->tx_errs = end->tx_errors - start->tx_errors;
++	stats_log->tx_drop = end->tx_dropped - start->tx_dropped;
++	stats_log->tx_fifo = end->tx_fifo_errors - start->tx_fifo_errors;
++	stats_log->tx_colls = end->collisions - start->collisions;
++	stats_log->tx_carrier = (end->tx_carrier_errors + end->tx_aborted_errors + end->tx_window_errors + end->tx_heartbeat_errors) -
++							(start->tx_carrier_errors + start->tx_aborted_errors + start->tx_window_errors + start->tx_heartbeat_errors);
++	stats_log->tx_compressed = end->tx_compressed - start->tx_compressed;
++	return 0;
++}
++
++int spr_net_stats_init(void)
++{
++	return 0;
++}
++
++void spr_net_suspend(void)
++{
++	save_stats(&saved_end_stats[0], "wlan0");
++	save_stats(&saved_end_stats[1], "lo");
++	return;
++}
++
++void spr_net_resume(void)
++{
++	save_stats(&saved_start_stats[0], "wlan0");
++	save_stats(&saved_start_stats[1], "lo");
++	return;
++}
++
++void spr_net_log_resume(void)
++{
++	save_stats(&saved_start_stats[0], "wlan0");
++	save_stats(&saved_start_stats[1], "lo");
++	return;
++}
++
++void spr_net_log_pause(void)
++{
++	save_stats(&saved_end_stats[0], "wlan0");
++	save_stats(&saved_end_stats[1], "lo");
++	return;
++}
++
++int spr_net_log(void)
++{
++	int i;
++	struct net_stats_log stats_log;
++	for (i = 0; i < 2; i++) {
++		stats_to_stats_log(&saved_start_stats[i].stats, &saved_end_stats[i].stats, &stats_log);
++		if (stats_log.rx_bytes != 0 || stats_log.tx_bytes != 0) {
++			spr_log_nt("NET %s %llu %u %u %u %u %u %u %u %llu %u %u %u %u %u %u %u", saved_start_stats[i].name,
++				stats_log.rx_bytes,
++				stats_log.rx_packets,
++				stats_log.rx_errs,
++				stats_log.rx_drop,
++				stats_log.rx_fifo,
++				stats_log.rx_frame,
++				stats_log.rx_compressed,
++				stats_log.rx_multicast,
++				stats_log.tx_bytes,
++				stats_log.tx_packets,
++				stats_log.tx_errs,
++				stats_log.tx_drop,
++				stats_log.tx_fifo,
++				stats_log.tx_colls,
++				stats_log.tx_carrier,
++				stats_log.tx_compressed);
++			printk("NET %s %llu %u %u %u %u %u %u %u %llu %u %u %u %u %u %u %u", saved_start_stats[i].name,
++				stats_log.rx_bytes,
++				stats_log.rx_packets,
++				stats_log.rx_errs,
++				stats_log.rx_drop,
++				stats_log.rx_fifo,
++				stats_log.rx_frame,
++				stats_log.rx_compressed,
++				stats_log.rx_multicast,
++				stats_log.tx_bytes,
++				stats_log.tx_packets,
++				stats_log.tx_errs,
++				stats_log.tx_drop,
++				stats_log.tx_fifo,
++				stats_log.tx_colls,
++				stats_log.tx_carrier,
++				stats_log.tx_compressed);
++		}
++	}
++	return 0;
++}
+\ No newline at end of file
+diff --git a/kernel/sprofiler/spr_net.h b/kernel/sprofiler/spr_net.h
+new file mode 100644
+index 0000000..df09aea
+--- /dev/null
++++ b/kernel/sprofiler/spr_net.h
+@@ -0,0 +1,13 @@
++#ifndef __SPR_NET
++#define __SPR_NET
++
++
++int spr_net_stats_init(void);
++void spr_net_suspend(void);
++void spr_net_resume(void);
++void spr_net_log_resume(void);
++void spr_net_log_pause(void);
++
++int spr_net_log(void);
++
++#endif
+\ No newline at end of file
+diff --git a/kernel/sprofiler/spr_panel.c b/kernel/sprofiler/spr_panel.c
+new file mode 100644
+index 0000000..84f6c40
+--- /dev/null
++++ b/kernel/sprofiler/spr_panel.c
+@@ -0,0 +1,136 @@
++#include <linux/kernel.h>
++#include <linux/time.h>
++#include <linux/rtc.h>
++#include <linux/sprofiler.h>
++#include <linux/spr_logger.h>
++#include <linux/timer.h>
++#include <linux/init.h>
++
++#include "spr_input.h"
++
++static int prev_brightness = 0;
++/* LT is deprecated */
++// static struct timeval saved_pressed_time;
++
++static struct timer_list my_timer;
++
++int spr_get_panel_brightness(void)
++{
++	return prev_brightness;
++}
++
++void spr_panel_log_resume(void)
++{
++	if (prev_brightness != 0) {
++		spr_log("SBR %d", prev_brightness);
++		//printk("L - SBR %d\n", prev_brightness);
++	}
++}
++
++static int written_brightness = -5;
++static void spr_write_brightness_log(unsigned long brightness)
++{
++	if (written_brightness + 5 < brightness ||
++		written_brightness - 5 > brightness ) {
++		spr_log("SBR %ld", brightness);
++		written_brightness = (int)brightness;
++		//printk("L SBR %ld\n", brightness);
++	}
++	
++}
++
++void spr_screen_brightness_change(int brightness)
++{
++	//unsigned long local_time;
++	//struct rtc_time tm;
++	IF_NOT_RESUMMED {
++		prev_brightness = brightness;
++		return;
++	}
++#ifdef CONFIG_MACH_LENOK
++	if (prev_brightness == 0 || brightness == 0 || brightness == 1 || brightness == 129 || brightness == 159 || brightness == 183 || brightness == 208 || brightness == 226 || brightness ==254 || brightness == 255) {
++		spr_log("SBR %d", brightness);
++	}
++	if (brightness == 0)
++		spr_input_screen_off();	// for spr_input
++#endif
++#ifdef CONFIG_MACH_MSM8974_HAMMERHEAD
++	// 0, 1 ... 180?
++	/*
++	if (prev_brightness == 0 || brightness == 0 || brightness == 1 || brightness % 30 == 0 || brightness == 255) {
++		spr_log("SBR %d", brightness);
++		printk("L - SBR %d\n", brightness);
++	} else
++		printk("-SBR %d\n", brightness);
++	*/
++	// late logging by timer
++	if (brightness != 0) {
++		my_timer.data = brightness;
++		mod_timer(&my_timer, jiffies + 5);
++	} else {
++		del_timer(&my_timer);
++		spr_log("SBR 0");
++		written_brightness = (int)brightness;
++		//printk("L SBR %d\n", brightness);
++	}
++#endif
++#ifdef CONFIG_MACH_BASS
++	// 0 129 159 183 208 226 254 255
++	if (brightness == 0 || brightness == 129 || brightness == 159 || brightness == 183 || brightness == 208 || brightness == 226 || brightness == 254 || brightness == 255) {
++		spr_log("SBR %d", brightness);
++		//printk("L - SBR %d\n", brightness);
++	} else {
++		//printk("SBR %d\n", brightness);
++	}
++	if (brightness == 0)
++		spr_input_screen_off();	// for spr_input
++#endif
++	// screen off
++	/* LT is deprecated, using DT
++	if (brightness == 0) {
++		if (saved_pressed_time.tv_sec == last_pressed_time.tv_sec &&
++			saved_pressed_time.tv_usec == last_pressed_time.tv_usec) {
++			prev_brightness = brightness;
++			return;
++		}
++		memcpy(&saved_pressed_time, &last_pressed_time, sizeof(struct timeval));
++		
++		local_time = (u32)(last_pressed_time.tv_sec - (sys_tz.tz_minuteswest * 60));
++		rtc_time_to_tm(local_time, &tm);
++		//printk("%04d-%02d-%02d %02d:%02d:%02d.%lu\n", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, last_pressed_time.tv_usec);
++		spr_log_nt("LT %04d-%02d-%02d %02d:%02d:%02d.%06lu", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, last_pressed_time.tv_usec);
++		printk("LT %04d-%02d-%02d %02d:%02d:%02d.%06lu\n", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, last_pressed_time.tv_usec);
++	}
++	*/
++	prev_brightness = brightness;
++}
++
++void spr_screen_panel_idle_mode_change(int enable)
++{
++	RETURN_IF_NOT_RESUMMED
++	spr_log("SID %d", enable);
++}
++
++// mdss_dsi_panel.c
++void spr_screen_panel_on_off(int mode)
++{
++	RETURN_IF_NOT_RESUMMED
++	if (mode == 1)
++		spr_log("SCR ON");	
++	else {
++#ifdef CONFIG_MACH_MSM8974_HAMMERHEAD
++		spr_input_screen_off();	// for spr_input
++#endif
++		spr_log("SCR OFF");
++	}
++}
++
++// timer init
++int __init spr_panel_late_init(void)
++{
++	init_timer(&my_timer);
++	my_timer.function = spr_write_brightness_log;
++	return 0;
++}
++
++late_initcall(spr_panel_late_init);
+\ No newline at end of file
+diff --git a/kernel/sprofiler/spr_panel.h b/kernel/sprofiler/spr_panel.h
+new file mode 100644
+index 0000000..50d7d52
+--- /dev/null
++++ b/kernel/sprofiler/spr_panel.h
+@@ -0,0 +1,7 @@
++#ifndef __SPR_PANEL
++#define __SPR_PANEL
++
++void spr_panel_log_resume(void);
++int spr_get_panel_brightness(void);
++
++#endif
+\ No newline at end of file
+diff --git a/kernel/sprofiler/spr_sched.c b/kernel/sprofiler/spr_sched.c
+new file mode 100644
+index 0000000..f793a10
+--- /dev/null
++++ b/kernel/sprofiler/spr_sched.c
+@@ -0,0 +1,282 @@
++#include <linux/kernel.h>
++#include <linux/mm.h>
++#include <linux/sched.h>
++#include <linux/spr_logger.h>
++
++#include "spr_common.h"
++
++static spinlock_t sched_time_lock;
++
++struct spr_task_runtime {
++	pid_t pid;
++	char comm[16];
++	unsigned int executed;
++};
++
++// total statistics
++static struct spr_task_runtime runtime_stat[2000];
++static int runtime_stat_cnt = 0;
++static int is_resumed[4];
++
++// current excuting process info
++struct spr_task_runtime executing_task_struct[4];
++unsigned long long executing_task_started[4];
++
++// idle info
++static unsigned int cpu_idle_time[4] = {0, 0, 0 ,0};
++
++static int bLogging = 0;
++static void sched_time_update(struct task_struct *task, unsigned int jiffies);
++///
++static unsigned long prev_jiffy = 0;
++static unsigned int print_c = 0;
++static int printk_ratelimit1(void);
++static int printk_ratelimit1(void)
++{
++	if (print_c++ < 10) {
++		prev_jiffy = jiffies;
++		return 1;
++	} else {
++		if (time_after(jiffies, prev_jiffy + 2 * HZ)) {
++				prev_jiffy = jiffies;
++				print_c = 0;
++				return 1;
++			}
++	}
++	/*
++	if (time_after(jiffies, prev_jiffy + 1 * HZ)) {
++		prev_jiffy = jiffies;
++		return 1;
++	}
++	*/
++	return 0;
++}
++///
++
++static inline void save_to(struct spr_task_runtime *spr_task, struct task_struct *task)
++{
++	spr_task->pid = task->tgid;
++	memcpy(spr_task->comm, task->comm, 16);
++}
++
++void spr_sched_context_switch(int cpu, struct task_struct *prev,
++	       struct task_struct *next)
++{
++	unsigned long long cur_time;
++	if (cpu != smp_processor_id()){
++		printk("\t!!!!!!!!!!!!!!!!!cpu != smp() %d %d\n", cpu, smp_processor_id());
++	}
++	cpu = smp_processor_id();
++
++
++	next = next->group_leader;
++	prev = prev->group_leader;
++
++	if (bLogging == 0){
++		save_to(&executing_task_struct[cpu], next);
++		return;
++	}
++	/*
++	if (printk_ratelimit1())
++		printk(KERN_ERR"\t %d]%d -> %d\n", cpu, prev->pid, next->pid);
++	*/
++	cur_time = get_jiffies_64();
++
++	if (executing_task_started[cpu] == 0) {
++		// first context switch after CPU online
++		executing_task_started[cpu] = cur_time;
++		save_to(&executing_task_struct[cpu], next);
++		printk("time is 0, seems new pcu %d\n", cpu);
++		return;
++	}
++	
++	if (executing_task_struct[cpu].pid != prev->pid)
++	{
++		if (is_resumed[cpu]) {
++			sched_time_update(prev, (unsigned int)(cur_time - executing_task_started[cpu]));
++			executing_task_started[cpu] = cur_time;
++			is_resumed[cpu] = 0;
++			return;
++		}
++		// maybe never occured
++		if (printk_ratelimit1()) {
++			printk(KERN_ERR"\t!!!!!!!!!!!!!!!!!!SPR %s executing_task_struct[%d] = %d, prev %d\n",
++			 __func__, cpu, executing_task_struct[cpu].pid, prev->pid);
++
++		}
++		save_to(&executing_task_struct[cpu], next);
++		executing_task_started[cpu] = cur_time;
++		return;
++	} 
++
++	//printk(KERN_ERR"\tSPR %s [%d] %d -> %d\n",
++	//	 __func__, cpu, prev->pid, next->pid);
++	save_to(&executing_task_struct[cpu], next);
++	sched_time_update(prev, (unsigned int)(cur_time - executing_task_started[cpu]));
++	if (prev->pid == 0) {
++		cpu_idle_time[cpu] += (unsigned int)(cur_time - executing_task_started[cpu]);
++	}
++	executing_task_started[cpu] = cur_time;
++}
++/*
++void spr_fork_copy_process(struct task_struct *p)
++{
++
++}
++
++void spr_exit_process(struct task_struct *p)
++{
++
++}
++*/
++static void sched_time_update(struct task_struct *task, unsigned int jiffies)
++{
++	int i;
++	struct spr_task_runtime *p_spr_task_runtime;
++	pid_t pid;
++
++	unsigned long long cur_time;
++	cur_time = get_jiffies_64();
++
++	pid = task->pid;
++
++	if (jiffies == 0 || task->pid == 0) return;
++	spin_lock(&sched_time_lock);
++
++	for (i = 0; i < runtime_stat_cnt; i++)
++	{
++		if (runtime_stat[i].pid == pid || strcmp(runtime_stat[i].comm, task->comm) == 0)
++		{
++			runtime_stat[i].executed += jiffies;
++			if (printk_ratelimit1()) {
++				//printk("update sched : %d %d %d\n", runtime_stat[i].pid, jiffies, runtime_stat[i].executed);
++			}
++			spin_unlock(&sched_time_lock);
++			return;
++		}
++	}
++	if (runtime_stat_cnt >= 2000) {
++		spin_unlock(&sched_time_lock);
++		printk(KERN_ERR"\t!!!!!!!!!!!!!!!!!!!!!!!!!!!runtime_stat_cnt overflow");
++		spr_log("runtime_stat overflow");
++		return;
++	}
++	// printk("new pid found %d %s %d\n", task->pid, task->comm, jiffies);
++	p_spr_task_runtime = &runtime_stat[runtime_stat_cnt];
++	p_spr_task_runtime->pid = task->pid;
++	p_spr_task_runtime->executed = jiffies;
++	memcpy(p_spr_task_runtime->comm, task->comm, 16);
++	runtime_stat_cnt++;
++	spin_unlock(&sched_time_lock);
++}
++
++void spr_sched_cpu_online(int cpu)
++{
++	executing_task_started[cpu] = 0;
++}
++
++int spr_sched_stats_init(void)
++{
++	runtime_stat_cnt = 0;
++	spin_lock_init(&sched_time_lock);
++	return 0;
++}
++void spr_sched_log_resume(void)
++{
++	unsigned int cpu;
++	unsigned long long cur_time;
++
++	spin_lock(&sched_time_lock);
++	cur_time = get_jiffies_64();
++	runtime_stat_cnt = 0;
++
++	for_each_possible_cpu(cpu) {
++		if (cpu_online(cpu)) {
++			executing_task_started[cpu] = cur_time;	
++			is_resumed[cpu] = 1;
++		} else
++			is_resumed[cpu] = 0;		
++		cpu_idle_time[cpu] = 0;
++	}
++	bLogging = 1;
++	spin_unlock(&sched_time_lock);
++}
++void spr_sched_log_pause(void)
++{
++	unsigned int cpu;
++	unsigned long long cur_time;
++	struct task_struct *tsk = NULL;
++
++	cur_time = get_jiffies_64();
++	bLogging = 0;
++
++	read_lock(&tasklist_lock);
++	spin_lock(&sched_time_lock);
++	for_each_online_cpu(cpu) {
++		if (executing_task_struct[cpu].pid != 0) {
++			tsk = find_task_by_vpid(executing_task_struct[cpu].pid);
++		} else {
++			tsk = idle_task(cpu);			
++		}
++		if (tsk != NULL && executing_task_started[cpu] != 0) {
++			spin_unlock(&sched_time_lock);
++			sched_time_update(tsk, (unsigned int)(cur_time - executing_task_started[cpu]));
++			spin_lock(&sched_time_lock);
++			if (tsk->pid == 0) {
++				cpu_idle_time[cpu] += (unsigned int)(cur_time - executing_task_started[cpu]);
++			}
++		}
++	}
++	read_unlock(&tasklist_lock);
++	spin_unlock(&sched_time_lock);
++}
++void spr_sched_suspend(void)
++{
++}
++void spr_sched_resume(void)
++{
++	unsigned int cpu;
++	runtime_stat_cnt = 0;	//reset
++	for_each_possible_cpu(cpu) {
++		cpu_idle_time[cpu] = 0;
++	}
++}
++
++#define TOP_PROCESS_LOG_CNT 5
++void spr_sched_log(void)
++{
++	int i, j, k;
++	char buf[160];
++	unsigned int found_max = 0;
++	unsigned int found_idx = 0;
++	int pos = 0;
++	struct spr_task_runtime tmp_runtime;
++
++	spr_log_nt("IDLE : %d %d %d %d", cpu_idle_time[0], cpu_idle_time[1], cpu_idle_time[2], cpu_idle_time[3]);
++	if (runtime_stat_cnt == 0) return;
++
++	for (j = 0; j < TOP_PROCESS_LOG_CNT && j < runtime_stat_cnt - 1; j++) {
++		found_max = runtime_stat[j].executed;
++		found_idx = j;
++
++		for (k = j + 1; k < runtime_stat_cnt; k++) {
++			if (runtime_stat[k].executed > found_max) {
++				found_max = runtime_stat[k].executed;
++				found_idx = k;
++			}
++		}
++
++		if (found_idx != j) {
++			memcpy(&tmp_runtime, &runtime_stat[found_idx], sizeof(struct spr_task_runtime));
++			memcpy(&runtime_stat[found_idx], &runtime_stat[j], sizeof(struct spr_task_runtime));
++			memcpy(&runtime_stat[j], &tmp_runtime, sizeof(struct spr_task_runtime));
++		}
++	}
++	pos += sprintf(buf + pos, "SCHED :");
++	for (i = 0; i < TOP_PROCESS_LOG_CNT && i < runtime_stat_cnt; i++)
++	{
++		//spr_log_nt("%s(%d)-%d ", runtime_stat[i].comm, runtime_stat[i].pid, runtime_stat[i].executed);
++		pos += sprintf(buf + pos, " %s|%d|%d", runtime_stat[i].comm, runtime_stat[i].pid, runtime_stat[i].executed);
++	}
++	spr_log_nt(buf);
++}
+\ No newline at end of file
+diff --git a/kernel/sprofiler/spr_sched.h b/kernel/sprofiler/spr_sched.h
+new file mode 100644
+index 0000000..4df44c1
+--- /dev/null
++++ b/kernel/sprofiler/spr_sched.h
+@@ -0,0 +1,16 @@
++#ifndef __SPR_SCHED
++#define __SPR_SCHED
++
++void spr_sched_context_switch(int cpu, struct task_struct *prev,
++	       struct task_struct *next);
++
++void spr_sched_cpu_online(int cpu);
++
++int spr_sched_stats_init(void);
++void spr_sched_log_resume(void);
++void spr_sched_log_pause(void);
++void spr_sched_suspend(void);
++void spr_sched_resume(void);
++void spr_sched_log(void);
++
++#endif
+\ No newline at end of file
+diff --git a/kernel/sprofiler/spr_udp.c b/kernel/sprofiler/spr_udp.c
+new file mode 100644
+index 0000000..b0824e5
+--- /dev/null
++++ b/kernel/sprofiler/spr_udp.c
+@@ -0,0 +1,130 @@
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/in.h>
++#include <net/sock.h>
++#include <linux/skbuff.h>
++#include <linux/delay.h>
++#include <linux/inet.h>
++#include <linux/errno.h>
++#include <linux/string.h>
++
++struct workqueue_struct *wq;
++
++struct touch_event {
++	int pressed;
++	int x;
++	int y;
++};
++
++union event{
++	struct touch_event te;
++};
++
++struct packet{
++	int type;
++	union event ev;
++};
++
++struct wq_wrapper{
++	struct work_struct worker;
++	struct packet pkt;
++};
++
++struct wq_wrapper wq_data;
++
++struct socket *sock;
++struct sockaddr_in _saAddr;
++int broadcastPort = 20000;
++unsigned char buf[4] = {1,2,3,4};
++
++/*
++static void cb_data(struct sock *sk, int bytes){
++	wq_data.sk = sk;
++	queue_work(wq, &wq_data.worker);
++}
++*/
++
++int ksocket_send(struct socket *sock, struct sockaddr_in *addr, unsigned char *buf, int len);
++void send_work_handler(struct work_struct *data);
++
++
++int send_touch_event(int pressed, int x, int y)
++{
++	int r;
++	if (!wq){
++		return -ENOMEM;
++	}
++     //ksocket_send(sock, &_saAddr, buf, sizeof(buf));
++	// wq_data.sk = null;
++	wq_data.pkt.type = 0;
++	wq_data.pkt.ev.te.pressed = pressed;
++	wq_data.pkt.ev.te.x = x;
++	wq_data.pkt.ev.te.y = y;
++
++
++	r = queue_work(wq, &wq_data.worker);
++	// printk("queue_work(%d) %d %d %d\n", r, pressed, x, y);
++	return 0;
++}
++
++int ksocket_send(struct socket *sock, struct sockaddr_in *addr, unsigned char *buf, int len)
++{
++	struct msghdr msg;
++	struct iovec iov;
++	mm_segment_t oldfs;
++	int size = 0;
++
++	if (sock->sk==NULL) {
++		// printk("socket->sk is null\n");
++		return 0;
++	}
++
++	iov.iov_base = buf;
++	iov.iov_len = len;
++
++	msg.msg_flags = 0;
++	msg.msg_name = addr;
++	msg.msg_namelen  = sizeof(struct sockaddr_in);
++	msg.msg_control = NULL;
++	msg.msg_controllen = 0;
++	msg.msg_iov = &iov;
++	msg.msg_iovlen = 1;
++	msg.msg_control = NULL;
++
++	oldfs = get_fs();
++	set_fs(KERNEL_DS);
++	size = sock_sendmsg(sock,&msg,len);
++	set_fs(oldfs);
++	// printk("ksocket_send size %d %d\n", size, len);
++	return size;
++}
++
++void send_work_handler(struct work_struct *data) {
++	struct  wq_wrapper * foo = container_of(data, struct  wq_wrapper, worker);
++	ksocket_send(sock, &_saAddr, (unsigned char *)&(foo->pkt), sizeof(struct packet));
++}
++
++
++static int __init spr_udp_init(void)
++{
++
++	wq = create_singlethread_workqueue("MDK_workqueue"); 
++	if (!wq){
++		return -ENOMEM;
++	}
++	INIT_WORK(&wq_data.worker, send_work_handler);
++
++
++	sock_create(PF_INET, SOCK_DGRAM, IPPROTO_UDP, &sock);
++	memset(&_saAddr, 0, sizeof(_saAddr));
++	_saAddr.sin_family      = AF_INET;
++	_saAddr.sin_port        = htons(broadcastPort);
++	_saAddr.sin_addr.s_addr = IN_LOOPBACKNET;
++
++	__set_bit(SOCK_BROADCAST, &sock->sk->sk_flags);
++
++	return 0;
++}
++
++late_initcall(spr_udp_init);
+\ No newline at end of file
+diff --git a/kernel/sprofiler/spr_udp.h b/kernel/sprofiler/spr_udp.h
+new file mode 100644
+index 0000000..6cb9882
+--- /dev/null
++++ b/kernel/sprofiler/spr_udp.h
+@@ -0,0 +1,6 @@
++#ifndef __SPR_UDP
++#define __SPR_UDP
++
++int send_touch_event(int pressed, int x, int y);
++
++#endif
+\ No newline at end of file
+diff --git a/kernel/sprofiler/spr_userio.c b/kernel/sprofiler/spr_userio.c
+new file mode 100644
+index 0000000..686dc07
+--- /dev/null
++++ b/kernel/sprofiler/spr_userio.c
+@@ -0,0 +1,54 @@
++#include <linux/kernel.h>
++#include <linux/string.h>
++#include <linux/sched.h>
++#include <linux/spinlock.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <asm/cputime.h>
++
++#include <linux/sprofiler.h>
++#include <linux/uaccess.h>
++
++#include "spr_common.h"
++#include "spr_input.h"
++#include "spr_panel.h"
++
++extern int get_last_wakeup_term_seconds(void);
++
++int get_session_info_to_user(struct spr_session_log* ubuf, int maxsize, int *uprval)
++{
++	int size, rval;
++	size = maxsize > spr_ginfo.cur_session ? spr_ginfo.cur_session : maxsize;
++	printk(KERN_WARNING"SPR\tget_session_info_to_user() %d\n", size);
++	put_user(size, uprval);
++	rval = copy_to_user(ubuf, session_log, size * sizeof(struct spr_session_log));
++	return rval;
++}
++
++
++int get_spr_status_to_user(int *state)
++{
++	int rval;
++	rval = copy_to_user(state, &spr_ginfo.state, sizeof(spr_ginfo.state));
++	return rval;
++}
++
++int get_spr_session_status_to_user(int* state)
++{
++	int rval = 0, touch_cnt, brightness, term;
++	// touch event
++	touch_cnt = (int)spr_get_touch_released_cnt();
++	rval += copy_to_user(state, &touch_cnt, sizeof(int));
++	state += 1;
++	
++	// brightness
++	brightness = spr_get_panel_brightness();
++	rval += copy_to_user(state, &brightness, sizeof(int));
++	state += 1;
++
++	// last wakeup before
++	term = get_last_wakeup_term_seconds();
++	rval += copy_to_user(state, &term, sizeof(int));
++	state += 1;
++	return rval;
++}
+\ No newline at end of file
+diff --git a/kernel/sprofiler/sprofiler_common.h b/kernel/sprofiler/sprofiler_common.h
+new file mode 100644
+index 0000000..f9ae99b
+--- /dev/null
++++ b/kernel/sprofiler/sprofiler_common.h
+@@ -0,0 +1,13 @@
++
++#ifndef __SPR_COMMON
++#define __SPR_COMMON
++extern char * spr_log_buffer;
++extern char * spr_log_pos;
++extern int spr_buffer_pos;
++
++extern struct spr_pstate_log pstate_log[SPR_MAX_PSTATE_LOG];
++extern struct spr_session_log session_log[SPR_MAX_SESSION_LOG];
++extern struct spr_schedule_stat schedule_stat[SPR_MAX_SCHEDULE_STAT];
++extern struct spr_info spr_ginfo;
++
++#endif
+-- 
+1.9.1
+
